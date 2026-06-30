@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval'; script-src 'self' 'unsafe-inline';">
+  <title data-i18n="title">Doris 数据导出助手</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ===== 工具栏 ===== */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      background: #f0f2f5;
+      border-bottom: 1px solid #d9d9d9;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .toolbar .brand {
+      font-size: 15px;
+      font-weight: bold;
+      color: #1a73e8;
+      white-space: nowrap;
+      margin-right: 4px;
+    }
+    .toolbar label {
+      font-size: 13px;
+      color: #555;
+      white-space: nowrap;
+    }
+    .toolbar input {
+      height: 32px;
+      border: 1px solid #d9d9d9;
+      border-radius: 4px;
+      padding: 0 8px;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .toolbar input:focus {
+      border-color: #1a73e8;
+      box-shadow: 0 0 0 2px rgba(26,115,232,0.15);
+    }
+    .toolbar input.url-input { width: 360px; flex: none; }
+    .toolbar input.selector-input { width: 220px; }
+    .toolbar input.filename-input { width: 200px; }
+    .toolbar select {
+      height: 32px;
+      border: 1px solid #d9d9d9;
+      border-radius: 4px;
+      padding: 0 8px;
+      font-size: 13px;
+      background: #fff;
+      cursor: pointer;
+      max-width: 480px;
+    }
+    .toolbar button {
+      height: 32px;
+      padding: 0 16px;
+      border: none;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.2s;
+    }
+    .toolbar label.checkbox-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .toolbar label.checkbox-label input[type="checkbox"] {
+      height: 14px;
+      width: 14px;
+      cursor: pointer;
+    }
+    .btn-go { background: #1a73e8; color: #fff; }
+    .btn-go:hover { background: #1557b0; }
+    .btn-export { background: #34a853; color: #fff; }
+    .btn-export:hover { background: #2d9249; }
+    .btn-auto { background: #fbbc04; color: #333; }
+    .btn-auto:hover { background: #e5a800; }
+    .btn-pick { background: #ea4335; color: #fff; }
+    .btn-pick:hover { background: #d33426; }
+    .btn-pick.active { background: #ff6d01; animation: pulse 1s infinite; }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(255,109,1,0.4); }
+      50% { box-shadow: 0 0 0 6px rgba(255,109,1,0); }
+    }
+    .status {
+      font-size: 12px;
+      color: #888;
+      margin-left: auto;
+      white-space: nowrap;
+      max-width: 600px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status.success { color: #34a853; }
+    .status.error { color: #ea4335; }
+
+    /* ===== 数据源选择 ===== */
+    .source-info {
+      padding: 6px 12px;
+      background: #fff8e1;
+      border-bottom: 1px solid #e1d5a8;
+      font-size: 12px;
+      color: #7a6300;
+      display: none;
+    }
+    .source-info.active { display: block; }
+    .source-info .tag {
+      display: inline-block;
+      padding: 1px 6px;
+      background: #34a853;
+      color: #fff;
+      border-radius: 3px;
+      margin-right: 6px;
+      font-size: 11px;
+    }
+    .source-info .tag.html { background: #fbbc04; color: #333; }
+
+    /* ===== webview 容器 ===== */
+    .webview-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    webview {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+
+    /* ===== 模态框 ===== */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal {
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px 24px;
+      width: 520px;
+      max-width: 90vw;
+      max-height: 80vh;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+      display: flex;
+      flex-direction: column;
+    }
+    .modal h3 {
+      margin-bottom: 16px;
+      font-size: 16px;
+      color: #333;
+    }
+    .modal-body {
+      flex: 1;
+      overflow-y: auto;
+      margin-bottom: 16px;
+    }
+    .modal-item {
+      padding: 12px;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .modal-item:hover { border-color: #1a73e8; background: #f5faff; }
+    .modal-item.selected { border-color: #1a73e8; background: #e8f0fe; }
+    .modal-item-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .modal-item-tag {
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      font-weight: bold;
+    }
+    .modal-item-tag.json { background: #4285f4; color: #fff; }
+    .modal-item-tag.html { background: #fbbc04; color: #333; }
+    .modal-item-tag.fallback { background: #9e9e9e; color: #fff; }
+    .modal-item-title { font-size: 13px; color: #333; font-weight: 500; }
+    .modal-item-info { font-size: 11px; color: #888; margin: 4px 0 0 0; }
+    .modal-item-columns {
+      font-size: 11px;
+      color: #555;
+      margin-top: 4px;
+      font-family: 'Consolas', monospace;
+      word-break: break-all;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #eee;
+    }
+    .btn-cancel {
+      background: #f5f5f5;
+      color: #333;
+      border: 1px solid #ddd;
+      padding: 8px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .btn-cancel:hover { background: #e8e8e8; }
+    .btn-confirm {
+      background: #34a853;
+      color: #fff;
+      border: none;
+      padding: 8px 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .btn-confirm:hover { background: #2d9249; }
+    .btn-confirm:disabled { background: #ccc; cursor: not-allowed; }
+    .modal-empty {
+      text-align: center;
+      padding: 40px 20px;
+      color: #888;
+      font-size: 13px;
+    }
+
+    /* ===== 凭证管理弹窗 ===== */
+    .cred-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .cred-item-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .cred-item-site {
+      font-weight: 500;
+      color: #333;
+      word-break: break-all;
+    }
+    .cred-item-user {
+      font-size: 12px;
+      color: #666;
+    }
+    .cred-item-date {
+      font-size: 11px;
+      color: #999;
+    }
+    .cred-item-delete {
+      background: #ea4335;
+      color: #fff;
+      border: none;
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .cred-item-delete:hover { background: #d33426; }
+
+    /* ===== 保存提示条（类似浏览器） ===== */
+    .save-prompt {
+      position: fixed;
+      top: 50px;
+      right: 20px;
+      background: #fff;
+      border: 1px solid #d9d9d9;
+      border-radius: 8px;
+      padding: 12px 16px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 10000;
+      display: none;
+      min-width: 280px;
+      max-width: 360px;
+    }
+    .save-prompt.active { display: block; }
+    .save-prompt-title {
+      font-size: 14px;
+      font-weight: 500;
+      color: #333;
+      margin-bottom: 4px;
+    }
+    .save-prompt-site {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 10px;
+      word-break: break-all;
+    }
+    .save-prompt-buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .save-prompt-btn {
+      padding: 6px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      cursor: pointer;
+      border: none;
+    }
+    .save-prompt-btn.cancel {
+      background: #f5f5f5;
+      color: #333;
+      border: 1px solid #ddd;
+    }
+    .save-prompt-btn.save {
+      background: #1a73e8;
+      color: #fff;
+    }
+    .save-prompt-btn.save:hover { background: #1557b0; }
+
+    /* ===== 导出成功操作栏 ===== */
+    .export-actions {
+      display: inline-flex;
+      gap: 8px;
+      margin-left: 8px;
+    }
+    .export-actions button {
+      padding: 2px 8px;
+      font-size: 11px;
+      border: 1px solid #34a853;
+      background: #fff;
+      color: #34a853;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .export-actions button:hover {
+      background: #34a853;
+      color: #fff;
+    }
+
+    .btn-cred {
+      background: #f0f0f0;
+      color: #555;
+      border: 1px solid #d9d9d9;
+      padding: 0 12px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .btn-cred:hover {
+      background: #e0e0e0;
+    }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <label data-i18n="labelUrl">目标地址:</label>
+    <input class="url-input" type="text" id="urlInput" data-i18n-placeholder="phUrl" placeholder="输入目标网站地址，如 http://xxx.com" value="http://pro.console.kscbigdata.cloud/main/?projectId=155/#/develop/batchdevelop" />
+    <button class="btn-go" id="btnGo" data-i18n="btnGo">前往</button>
+    <label class="checkbox-label" style="display:none;">
+      <input type="checkbox" id="rememberCheck" checked />
+      <span data-i18n="labelRemember">记住账号</span>
+    </label>
+    <button class="btn-cred" id="btnCredManager" title="管理已保存的账号密码">已保存账号</button>
+    <label>查询结果数据过期时间:</label>
+    <input type="number" id="expireMinutesInput" min="1" max="120" value="10" style="width:60px;height:32px;padding:0 8px;border:1px solid #d0d0d0;border-radius:4px;font-size:13px;" />
+    <span style="font-size:12px;color:#666;margin-right:8px;">分钟</span>
+    <label data-i18n="labelSelector" style="display:none;">表格选择器:</label>
+    <span id="selectorGroup" style="display:none;">
+    <input class="selector-input" type="text" id="selectorInput" data-i18n-placeholder="phSelector" placeholder="CSS选择器（HTML模式）" />
+    <button class="btn-auto" id="btnAuto" data-i18n="btnAuto" title="尝试自动检测">自动检测</button>
+    <button class="btn-pick" id="btnPick" data-i18n="btnPick" title="点击后在页面中选择表格元素">元素选取</button>
+    <span id="jsonModeIndicator" style="display:none;font-size:11px;background:#4285f4;color:#fff;padding:2px 8px;border-radius:10px;white-space:nowrap;">JSON模式</span>
+    </span>
+    <label data-i18n="labelFilename">文件名:</label>
+    <input class="filename-input" type="text" id="filenameInput" data-i18n-placeholder="phFilename" placeholder="自定义文件名（不含扩展名）" />
+    <button class="btn-export" id="btnExport" data-i18n="btnExport">导出 Excel</button>
+    <span class="status" id="statusText" data-i18n="statusReady">就绪</span>
+  </div>
+
+  <div class="source-info" id="sourceInfo">
+    <span class="tag" id="sourceTag">JSON</span>
+    <span id="sourceText"></span>
+  </div>
+
+  <div class="webview-container">
+    <webview id="webview" src="about:blank"
+      preload=""
+      webpreferences="contextIsolation=yes,nodeIntegration=no,javascript=yes"
+      allowpopups
+      style="width:100%; height:100%;">
+    </webview>
+  </div>
+
+  <!-- 数据源选择模态框 -->
+  <div class="modal-overlay" id="sourceModal">
+    <div class="modal">
+      <h3 id="modalTitle">选择要导出的数据</h3>
+      <div class="modal-body" id="modalBody"></div>
+      <div class="modal-footer">
+        <button class="btn-cancel" id="btnCancelModal">取消</button>
+        <button class="btn-confirm" id="btnConfirmExport" disabled>导出所选</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 凭证管理模态框 -->
+  <div class="modal-overlay" id="credModal">
+    <div class="modal">
+      <h3 id="credModalTitle">已保存的账号</h3>
+      <div class="modal-body" id="credModalBody"></div>
+      <div class="modal-footer">
+        <button class="btn-cancel" id="btnCloseCredModal">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 保存凭证提示条 -->
+  <div class="save-prompt" id="savePrompt">
+    <div class="save-prompt-title">是否保存此网站的账号密码？</div>
+    <div class="save-prompt-site" id="savePromptSite"></div>
+    <div class="save-prompt-buttons">
+      <button class="save-prompt-btn cancel" id="btnSavePromptCancel">否</button>
+      <button class="save-prompt-btn save" id="btnSavePromptSave">保存</button>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
