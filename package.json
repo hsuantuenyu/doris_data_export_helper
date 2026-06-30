@@ -1,0 +1,74 @@
+{
+  "name": "doris-data-export-helper",
+  "version": "1.0.0",
+  "description": "Doris 数据导出助手 - 在目标网站外嵌套框架，提取查询结果导出为 Excel",
+  "main": "main.js",
+  "author": "Doris Export Helper",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux",
+    "build:all": "electron-builder --win --mac --linux"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.6.0"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "build": {
+    "appId": "com.doris.export-helper",
+    "productName": "Doris 数据导出助手",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json",
+      "!dist/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "executableName": "Doris 数据导出助手",
+      "artifactName": "Doris数据导出助手-x64.exe",
+      "sign": false,
+      "signAndEditExecutable": false,
+      "signDlls": false,
+      "legalTrademarks": "Doris 数据导出助手"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Doris 数据导出助手"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] },
+        { "target": "zip", "arch": ["x64", "arm64"] }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb", "arch": ["x64"] },
+        { "target": "rpm", "arch": ["x64"] }
+      ],
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "category": "Office"
+    }
+  }
+}
