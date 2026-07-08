@@ -28,7 +28,7 @@ const I18N = {
     msgNoHeaders: '未能提取到表头，请检查选择器',
     msgAutoDetect: (total, rows, cols) => `检测到 ${total} 个表格，已选择最大的 (${rows}行 × ${cols}列)`,
     msgAutoFail: '自动检测失败:',
-    msgEmptyTable: '页面中未检测到任何有数据的表格。请先在页面中执行查询，或尝试"自动检测"。',
+    msgEmptyTable: '页面中未检测到任何有数据的表格。请先进行数据查询后再导出',
     msgExportSuccess: '导出成功:',
     msgExportFail: '导出失败:',
     msgCredSaved: '账号已保存，下次访问自动填充',
@@ -294,6 +294,24 @@ selectorInput.addEventListener('change', () => {
 filenameInput.addEventListener('change', () => {
   try { window.electronAPI.saveUserInput({ filename: filenameInput.value.trim() }); } catch (_) {}
 });
+
+const btnFilenameClear = document.getElementById('btnFilenameClear');
+function updateFilenameClearBtn() {
+  if (btnFilenameClear) {
+    btnFilenameClear.style.display = filenameInput.value.trim() ? 'flex' : 'none';
+  }
+}
+filenameInput.addEventListener('input', updateFilenameClearBtn);
+if (btnFilenameClear) {
+  btnFilenameClear.addEventListener('click', () => {
+    filenameInput.value = '';
+    updateFilenameClearBtn();
+    filenameInput.focus();
+    try { window.electronAPI.saveUserInput({ filename: '' }); } catch (_) {}
+  });
+}
+// 初始化时检查
+updateFilenameClearBtn();
 
 expireMinutesInput.addEventListener('change', () => {
   let val = parseInt(expireMinutesInput.value, 10);
@@ -866,32 +884,92 @@ async function injectJsonCapture() {
 	          return false;
 	        }
 
+      function getActiveTabTitle() {
+        try {
+          var title = document.title || '';
+          var selectors = [
+            '.ant-tabs-tab-active', '.el-tabs__item.is-active', '.ivu-tabs-tab-active',
+            '.nav-tabs li.active a', '.tab-content .tab-pane.active .panel-title',
+            '[role="tab"][aria-selected="true"]', '.tabs .tab.active', '.tab-item.active',
+            '.v-tab--active', '.router-link-active', '.active .tab-label', '.active .nav-label',
+            '.cdc-tabs .tab-item.active', '.tabs-nav li.active a', '.tab-nav .active'
+          ];
+          for (var i = 0; i < selectors.length; i++) {
+            var el = document.querySelector(selectors[i]);
+            if (el) {
+              var text = (el.textContent || el.innerText || '').trim();
+              if (text && text.length > 0 && text.length < 100) return text;
+            }
+          }
+          // 尝试查找带关闭按钮的Tab
+          var closeBtns = document.querySelectorAll('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, [class*="close"]');
+          for (var j = 0; j < closeBtns.length; j++) {
+            var tabEl = closeBtns[j].closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
+            if (tabEl) {
+              var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
+              if (tabText && tabText.length > 0 && tabText.length < 100) {
+                if (tabEl.classList.contains('active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
+                  return tabText;
+                }
+              }
+            }
+          }
+          var hash = window.location.hash;
+          if (hash && hash.length > 1 && hash.length < 50) return hash.substring(1);
+          return title;
+        } catch(e) { return document.title || ''; }
+      }
+
       function pushResponse(url, data, size) {
         try {
-			// 检查是否在黑名单中
-			if (isBlacklisted(url)) {
-			    return;
-			  }
-			  
-			 // 检查是否已存在相同URL的数据（去重）
-          const existingIndex = window.__capturedJsonResponses.findIndex(
+          if (isBlacklisted(url)) return;
+
+          var rowCount = 0;
+          try {
+            if (Array.isArray(data)) rowCount = data.length;
+            else if (data && typeof data === 'object') {
+              var keys = ['data','result','rows','records','list'];
+              for (var k = 0; k < keys.length; k++) {
+                var v = data[keys[k]];
+                if (Array.isArray(v)) { rowCount = v.length; break; }
+              }
+            }
+          } catch(e) {}
+          var isBig = (size || 0) > 5 * 1024 * 1024 || rowCount > 50000;
+
+          var existingIndex = window.__capturedJsonResponses.findIndex(
             r => r.url === url && r.timestamp > Date.now() - 5000
           );
           if (existingIndex !== -1) {
-            // 更新已有记录
             window.__capturedJsonResponses[existingIndex].data = data;
             window.__capturedJsonResponses[existingIndex].timestamp = Date.now();
+            window.__capturedJsonResponses[existingIndex].pageTitle = getActiveTabTitle();
             return;
           }
-            
+
           window.__capturedJsonResponses.push({
             url: url || 'unknown',
             timestamp: Date.now(),
             size: size || 0,
-            data: data
+            data: data,
+            rowCount: rowCount,
+            pageTitle: getActiveTabTitle()
           });
           if (window.__capturedJsonResponses.length > 50) {
             window.__capturedJsonResponses.splice(0, window.__capturedJsonResponses.length - 50);
+          }
+
+          // 内存优化：总大小超过50MB时，清理旧数据的data字段
+          var totalSize = 0;
+          for (var j = 0; j < window.__capturedJsonResponses.length; j++) {
+            totalSize += window.__capturedJsonResponses[j].size || 0;
+          }
+          if (totalSize > 50 * 1024 * 1024) {
+            for (var m = 0; m < window.__capturedJsonResponses.length; m++) {
+              if (window.__capturedJsonResponses[m].data) {
+                window.__capturedJsonResponses[m].data = null;
+              }
+            }
           }
         } catch(e) {}
       }
@@ -1423,7 +1501,8 @@ async function scanAllSourcesFromWebview() {
                   rowCount: r.rowCount,
                   colCount: r.headers.length,
                   timestamp: resp.timestamp,
-                  cacheId: cacheId
+                  cacheId: cacheId,
+                  pageTitle: resp.pageTitle || ''
                 });
               }
             }
@@ -1506,7 +1585,8 @@ async function scanAllSources() {
               colCount: r.headers.length,
               timestamp: resp.timestamp,
               mainCaptureIndex: typeof mainCaptureIndex === 'number' ? mainCaptureIndex : undefined,
-              path: r.path
+              path: r.path,
+              pageTitle: resp.pageTitle || ''
             });
           }
         }
@@ -1850,16 +1930,88 @@ async function showExportModal() {
   capturedSources = [...filteredJson, ...htmlSources];
   capturedSources.sort((a, b) => b.rowCount - a.rowCount);
 
+  // 获取当前活动Tab页标题，用于标记和排序
+  let currentTabTitle = '';
+  try {
+    currentTabTitle = await webview.executeJavaScript(`
+      (function() {
+        var selectors = [
+          '.ant-tabs-tab-active', '.el-tabs__item.is-active', '.ivu-tabs-tab-active',
+          '.nav-tabs li.active a', '.tab-content .tab-pane.active .panel-title',
+          '[role="tab"][aria-selected="true"]', '.tabs .tab.active', '.tab-item.active',
+          '.v-tab--active', '.router-link-active', '.active .tab-label', '.active .nav-label',
+          '.cdc-tabs .tab-item.active', '.tabs-nav li.active a', '.tab-nav .active'
+        ];
+        for (var i = 0; i < selectors.length; i++) {
+          var el = document.querySelector(selectors[i]);
+          if (el) {
+            var text = (el.textContent || el.innerText || '').trim();
+            if (text && text.length > 0 && text.length < 100) return text;
+          }
+        }
+        // 尝试查找带关闭按钮的Tab
+        var closeBtns = document.querySelectorAll('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, [class*="close"]');
+        for (var j = 0; j < closeBtns.length; j++) {
+          var tabEl = closeBtns[j].closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
+          if (tabEl) {
+            var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
+            if (tabText && tabText.length > 0 && tabText.length < 100) {
+              if (tabEl.classList.contains('active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
+                return tabText;
+              }
+            }
+          }
+        }
+        var hash = window.location.hash;
+        if (hash && hash.length > 1 && hash.length < 50) return hash.substring(1);
+        return document.title || '';
+      })()
+    `) || '';
+  } catch (_) {}
+
+  // 标记每个数据源是否匹配当前Tab页，并按匹配度排序
+  if (currentTabTitle) {
+    capturedSources.forEach(s => {
+      s.isCurrentTab = false;
+      if (s.pageTitle) {
+        const a = s.pageTitle.trim().toLowerCase();
+        const b = currentTabTitle.trim().toLowerCase();
+        if (a === b || a.indexOf(b) >= 0 || b.indexOf(a) >= 0) {
+          s.isCurrentTab = true;
+        }
+      }
+    });
+    // 排序：当前Tab页的排最前，然后按行数降序
+    capturedSources.sort((a, b) => {
+      if (a.isCurrentTab && !b.isCurrentTab) return -1;
+      if (!a.isCurrentTab && b.isCurrentTab) return 1;
+      return b.rowCount - a.rowCount;
+    });
+  }
+
+  // 如果获取到了当前Tab页标题，只使用属于当前Tab页的数据
+  let filteredSources = capturedSources;
+  if (currentTabTitle) {
+    const currentTabSources = capturedSources.filter(s => s.isCurrentTab);
+    if (currentTabSources.length > 0) {
+      filteredSources = currentTabSources;
+    } else {
+      // 当前Tab页没有数据，提示用户
+      setStatus(tr('msgEmptyTable'), 'error');
+      return;
+    }
+  }
+
   // 2. 如果只有1个数据源，直接导出
-  if (capturedSources.length === 1) {
-    const only = capturedSources[0];
+  if (filteredSources.length === 1) {
+    const only = filteredSources[0];
     selectedSource = only;
     await doExport(only);
     return;
   }
 
   // 3. 如果没有数据源，使用 selectorInput 中的CSS选择器尝试
-  if (capturedSources.length === 0) {
+  if (filteredSources.length === 0) {
     const manualSel = selectorInput.value.trim();
     if (manualSel) {
       const data = await extractTableDataBySelector(manualSel);
@@ -1883,7 +2035,7 @@ async function showExportModal() {
   }
 
   // 4. 有多个数据源，显示选择弹窗
-  renderModal(capturedSources);
+  renderModal(filteredSources);
   sourceModal.classList.add('active');
 }
 
@@ -2002,12 +2154,51 @@ function renderModal(sources) {
     header.appendChild(title);
     item.appendChild(header);
 
+    // Tab页名称（如果存在）
+    if (src.pageTitle && src.pageTitle.trim()) {
+      const pageTitle = document.createElement('div');
+      pageTitle.className = 'modal-item-pagetitle';
+      let prefix = '';
+      if (src.isCurrentTab) {
+        prefix = '✓ 当前Tab: ';
+        pageTitle.classList.add('current-tab');
+      }
+      pageTitle.textContent = prefix + src.pageTitle;
+      item.appendChild(pageTitle);
+    }
+
+    // 来源信息：URL + 时间 + 大小
     const info = document.createElement('div');
     info.className = 'modal-item-info';
-    info.textContent = src.type === 'json'
+    let infoText = src.type === 'json'
       ? tr('msgJsonSource') + ': ' + shortenUrl(src.source)
       : tr('msgHtmlSource') + ': ' + src.source;
+    // 添加时间信息
+    if (src.timestamp) {
+      const date = new Date(src.timestamp);
+      const timeStr = date.getHours().toString().padStart(2, '0') + ':' +
+                      date.getMinutes().toString().padStart(2, '0') + ':' +
+                      date.getSeconds().toString().padStart(2, '0');
+      infoText += ' | ' + timeStr;
+    }
+    // 添加大小信息
+    if (src.size) {
+      const sizeMB = (src.size / 1024 / 1024).toFixed(1);
+      infoText += ' | ' + sizeMB + 'MB';
+    }
+    info.textContent = infoText;
     item.appendChild(info);
+
+    // URL关键参数（帮助区分相同API的不同查询）
+    if (src.type === 'json' && src.source) {
+      const keyParams = extractUrlKeyParams(src.source);
+      if (keyParams) {
+        const paramsDiv = document.createElement('div');
+        paramsDiv.className = 'modal-item-params';
+        paramsDiv.textContent = keyParams;
+        item.appendChild(paramsDiv);
+      }
+    }
 
     const cols = document.createElement('div');
     cols.className = 'modal-item-columns';
@@ -2035,6 +2226,35 @@ function shortenUrl(url) {
   if (!url) return '';
   if (url.length > 80) return url.substring(0, 40) + '...' + url.substring(url.length - 35);
   return url;
+}
+
+// 从URL中提取关键参数，帮助用户区分相同API的不同查询
+function extractUrlKeyParams(url) {
+  try {
+    if (!url || typeof url !== 'string') return null;
+    const urlObj = new URL(url);
+    const params = urlObj.searchParams;
+    const keyNames = ['ey', 'id', 'taskId', 'queryId', 'sqlId', 'name', 'table', 'type', 'mode', 'action'];
+    const parts = [];
+    for (const name of keyNames) {
+      const val = params.get(name);
+      if (val && val.length < 30) {
+        parts.push(name + '=' + val);
+      }
+    }
+    // 也检查路径最后一段
+    const pathParts = urlObj.pathname.split('/').filter(p => p);
+    const lastPart = pathParts[pathParts.length - 1];
+    if (lastPart && lastPart.length < 20 && !/^\d+$/.test(lastPart)) {
+      parts.unshift(lastPart);
+    }
+    if (parts.length > 0) {
+      return '参数: ' + parts.join(', ');
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
 }
 
 btnCancelModal.addEventListener('click', () => {

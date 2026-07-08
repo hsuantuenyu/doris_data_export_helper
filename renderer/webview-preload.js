@@ -115,6 +115,61 @@
     return 0;
   }
 
+  function getActiveTabTitle() {
+    try {
+      var title = document.title || '';
+      // 尝试从常见Tab组件获取当前激活Tab标签文本
+      var selectors = [
+        '.ant-tabs-tab-active',
+        '.el-tabs__item.is-active',
+        '.ivu-tabs-tab-active',
+        '.nav-tabs li.active a',
+        '.tab-content .tab-pane.active .panel-title',
+        '[role="tab"][aria-selected="true"]',
+        '.tabs .tab.active',
+        '.tab-item.active',
+        '.v-tab--active',
+        '.router-link-active',
+        '.active .tab-label',
+        '.active .nav-label',
+        '.cdc-tabs .tab-item.active',
+        '.tabs-nav li.active a',
+        '.tab-nav .active'
+      ];
+      for (var i = 0; i < selectors.length; i++) {
+        var el = document.querySelector(selectors[i]);
+        if (el) {
+          var text = (el.textContent || el.innerText || '').trim();
+          if (text && text.length > 0 && text.length < 100) {
+            return text;
+          }
+        }
+      }
+      // 尝试查找带关闭按钮的Tab（常见于编辑器多Tab场景）
+      var closeBtns = document.querySelectorAll('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, [class*="close"]');
+      for (var j = 0; j < closeBtns.length; j++) {
+        var tabEl = closeBtns[j].closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
+        if (tabEl) {
+          var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
+          if (tabText && tabText.length > 0 && tabText.length < 100) {
+            // 如果这个Tab是激活状态，返回它的文本
+            if (tabEl.classList.contains('active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
+              return tabText;
+            }
+          }
+        }
+      }
+      // 尝试从URL hash或路径提取
+      var hash = window.location.hash;
+      if (hash && hash.length > 1 && hash.length < 50) {
+        return hash.substring(1);
+      }
+      return title;
+    } catch(e) {
+      return document.title || '';
+    }
+  }
+
   function pushResponse(url, data, size) {
     try {
       const rowCount = estimateRowCount(data);
@@ -128,7 +183,8 @@
         data: data,
         rowCount: rowCount,
         isBig: isBig,
-        isHuge: isHuge
+        isHuge: isHuge,
+        pageTitle: getActiveTabTitle()
       };
 
       if (ipcRenderer) {
@@ -137,11 +193,29 @@
         } catch (_) {}
       }
 
+      // 内存优化：大数据已发送到主进程后，释放webv_view中的data以减少内存占用，防止崩溃
+      if (ipcRenderer && (isBig || isHuge)) {
+        entry.data = null;
+      }
+
       window.__capturedJsonResponses.push(entry);
 
       const maxKeep = isBig ? MAX_BIG_KEEP : MAX_SMALL_KEEP;
       if (window.__capturedJsonResponses.length > maxKeep) {
         window.__capturedJsonResponses.splice(0, window.__capturedJsonResponses.length - maxKeep);
+      }
+
+      // 进一步内存优化：如果webv_view中累积的数据总大小超过阈值，清理所有旧数据的data字段
+      var totalSize = 0;
+      for (var j = 0; j < window.__capturedJsonResponses.length; j++) {
+        totalSize += window.__capturedJsonResponses[j].size || 0;
+      }
+      if (totalSize > 50 * 1024 * 1024) { // 50MB
+        for (var k = 0; k < window.__capturedJsonResponses.length; k++) {
+          if (window.__capturedJsonResponses[k].data) {
+            window.__capturedJsonResponses[k].data = null;
+          }
+        }
       }
     } catch(e) {}
   }

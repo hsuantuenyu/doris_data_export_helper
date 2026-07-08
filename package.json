@@ -41,10 +41,13 @@
       ],
       "executableName": "Doris 数据导出助手",
       "artifactName": "Doris数据导出助手-x64.exe",
-      "sign": false,
+      "sign": null,
       "signAndEditExecutable": false,
       "signDlls": false,
-      "legalTrademarks": "Doris 数据导出助手"
+      "legalTrademarks": "Doris 数据导出助手",
+      "certificateFile": null,
+      "certificatePassword": null,
+      "publisherName": null
     },
     "nsis": {
       "oneClick": false,
