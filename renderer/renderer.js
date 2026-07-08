@@ -888,6 +888,8 @@ async function injectJsonCapture() {
         try {
           var title = document.title || '';
           var selectors = [
+            '.k-tab.k-active',
+            '.k-tab.active',
             '.ant-tabs-tab-active', '.el-tabs__item.is-active', '.ivu-tabs-tab-active',
             '.nav-tabs li.active a', '.tab-content .tab-pane.active .panel-title',
             '[role="tab"][aria-selected="true"]', '.tabs .tab.active', '.tab-item.active',
@@ -897,6 +899,16 @@ async function injectJsonCapture() {
           for (var i = 0; i < selectors.length; i++) {
             var el = document.querySelector(selectors[i]);
             if (el) {
+              var titleSpan = el.querySelector('span[title]');
+              if (titleSpan) {
+                var t = (titleSpan.getAttribute('title') || '').trim();
+                if (t && t.length > 0 && t.length < 100) return t;
+              }
+              var vueSpan = el.querySelector('span[data-v-e4a060c8]');
+              if (vueSpan) {
+                var t2 = (vueSpan.getAttribute('title') || vueSpan.textContent || vueSpan.innerText || '').trim();
+                if (t2 && t2.length > 0 && t2.length < 100) return t2;
+              }
               var text = (el.textContent || el.innerText || '').trim();
               if (text && text.length > 0 && text.length < 100) return text;
             }
@@ -904,11 +916,21 @@ async function injectJsonCapture() {
           // 尝试查找带关闭按钮的Tab
           var closeBtns = document.querySelectorAll('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, [class*="close"]');
           for (var j = 0; j < closeBtns.length; j++) {
-            var tabEl = closeBtns[j].closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
+            var tabEl = closeBtns[j].closest('.k-tab, .ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
             if (tabEl) {
+              var titleSpan2 = tabEl.querySelector('span[title]');
+              if (titleSpan2) {
+                var t3 = (titleSpan2.getAttribute('title') || '').trim();
+                if (t3 && t3.length > 0 && t3.length < 100) return t3;
+              }
+              var vueSpan2 = tabEl.querySelector('span[data-v-e4a060c8]');
+              if (vueSpan2) {
+                var t4 = (vueSpan2.getAttribute('title') || vueSpan2.textContent || vueSpan2.innerText || '').trim();
+                if (t4 && t4.length > 0 && t4.length < 100) return t4;
+              }
               var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
               if (tabText && tabText.length > 0 && tabText.length < 100) {
-                if (tabEl.classList.contains('active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
+                if (tabEl.classList.contains('active') || tabEl.classList.contains('k-active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
                   return tabText;
                 }
               }
@@ -1936,6 +1958,8 @@ async function showExportModal() {
     currentTabTitle = await webview.executeJavaScript(`
       (function() {
         var selectors = [
+          '.k-tab.k-active',
+          '.k-tab.active',
           '.ant-tabs-tab-active', '.el-tabs__item.is-active', '.ivu-tabs-tab-active',
           '.nav-tabs li.active a', '.tab-content .tab-pane.active .panel-title',
           '[role="tab"][aria-selected="true"]', '.tabs .tab.active', '.tab-item.active',
@@ -1945,6 +1969,16 @@ async function showExportModal() {
         for (var i = 0; i < selectors.length; i++) {
           var el = document.querySelector(selectors[i]);
           if (el) {
+            var titleSpan = el.querySelector('span[title]');
+            if (titleSpan) {
+              var t = (titleSpan.getAttribute('title') || '').trim();
+              if (t && t.length > 0 && t.length < 100) return t;
+            }
+            var vueSpan = el.querySelector('span[data-v-e4a060c8]');
+            if (vueSpan) {
+              var t2 = (vueSpan.getAttribute('title') || vueSpan.textContent || vueSpan.innerText || '').trim();
+              if (t2 && t2.length > 0 && t2.length < 100) return t2;
+            }
             var text = (el.textContent || el.innerText || '').trim();
             if (text && text.length > 0 && text.length < 100) return text;
           }
@@ -1952,11 +1986,21 @@ async function showExportModal() {
         // 尝试查找带关闭按钮的Tab
         var closeBtns = document.querySelectorAll('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, [class*="close"]');
         for (var j = 0; j < closeBtns.length; j++) {
-          var tabEl = closeBtns[j].closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
+          var tabEl = closeBtns[j].closest('.k-tab, .ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
           if (tabEl) {
+            var titleSpan2 = tabEl.querySelector('span[title]');
+            if (titleSpan2) {
+              var t3 = (titleSpan2.getAttribute('title') || '').trim();
+              if (t3 && t3.length > 0 && t3.length < 100) return t3;
+            }
+            var vueSpan2 = tabEl.querySelector('span[data-v-e4a060c8]');
+            if (vueSpan2) {
+              var t4 = (vueSpan2.getAttribute('title') || vueSpan2.textContent || vueSpan2.innerText || '').trim();
+              if (t4 && t4.length > 0 && t4.length < 100) return t4;
+            }
             var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
             if (tabText && tabText.length > 0 && tabText.length < 100) {
-              if (tabEl.classList.contains('active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
+              if (tabEl.classList.contains('active') || tabEl.classList.contains('k-active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
                 return tabText;
               }
             }

@@ -120,6 +120,8 @@
       var title = document.title || '';
       // 尝试从常见Tab组件获取当前激活Tab标签文本
       var selectors = [
+        '.k-tab.k-active',
+        '.k-tab.active',
         '.ant-tabs-tab-active',
         '.el-tabs__item.is-active',
         '.ivu-tabs-tab-active',
@@ -139,6 +141,17 @@
       for (var i = 0; i < selectors.length; i++) {
         var el = document.querySelector(selectors[i]);
         if (el) {
+          var titleSpan = el.querySelector('span[title]');
+          if (titleSpan) {
+            var t = (titleSpan.getAttribute('title') || '').trim();
+            if (t && t.length > 0 && t.length < 100) return t;
+          }
+          // 尝试查找带有Vue组件标识的Tab标题
+          var vueSpan = el.querySelector('span[data-v-e4a060c8]');
+          if (vueSpan) {
+            var t2 = (vueSpan.getAttribute('title') || vueSpan.textContent || vueSpan.innerText || '').trim();
+            if (t2 && t2.length > 0 && t2.length < 100) return t2;
+          }
           var text = (el.textContent || el.innerText || '').trim();
           if (text && text.length > 0 && text.length < 100) {
             return text;
