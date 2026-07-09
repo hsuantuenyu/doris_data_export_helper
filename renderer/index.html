@@ -410,6 +410,43 @@
     .btn-cred:hover {
       background: #e0e0e0;
     }
+
+    /* ===== 导出处理遮罩层 ===== */
+    .export-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9998;
+      backdrop-filter: blur(2px);
+    }
+    .export-overlay.active { display: flex; }
+    .export-overlay-content {
+      background: #fff;
+      border-radius: 8px;
+      padding: 30px 40px;
+      text-align: center;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    }
+    .export-overlay-spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #f0f0f0;
+      border-top: 4px solid #34a853;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .export-overlay-text {
+      font-size: 14px;
+      color: #333;
+    }
   </style>
 </head>
 <body>
@@ -506,6 +543,14 @@
     <div class="save-prompt-buttons">
       <button class="save-prompt-btn cancel" id="btnSavePromptCancel">否</button>
       <button class="save-prompt-btn save" id="btnSavePromptSave">保存</button>
+    </div>
+  </div>
+
+  <!-- 导出处理遮罩层 -->
+  <div class="export-overlay" id="exportOverlay">
+    <div class="export-overlay-content">
+      <div class="export-overlay-spinner"></div>
+      <div class="export-overlay-text">正在处理数据，请稍候...</div>
     </div>
   </div>
 

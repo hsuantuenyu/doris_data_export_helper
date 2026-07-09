@@ -904,11 +904,6 @@ async function injectJsonCapture() {
                 var t = (titleSpan.getAttribute('title') || '').trim();
                 if (t && t.length > 0 && t.length < 100) return t;
               }
-              var vueSpan = el.querySelector('span[data-v-e4a060c8]');
-              if (vueSpan) {
-                var t2 = (vueSpan.getAttribute('title') || vueSpan.textContent || vueSpan.innerText || '').trim();
-                if (t2 && t2.length > 0 && t2.length < 100) return t2;
-              }
               var text = (el.textContent || el.innerText || '').trim();
               if (text && text.length > 0 && text.length < 100) return text;
             }
@@ -922,11 +917,6 @@ async function injectJsonCapture() {
               if (titleSpan2) {
                 var t3 = (titleSpan2.getAttribute('title') || '').trim();
                 if (t3 && t3.length > 0 && t3.length < 100) return t3;
-              }
-              var vueSpan2 = tabEl.querySelector('span[data-v-e4a060c8]');
-              if (vueSpan2) {
-                var t4 = (vueSpan2.getAttribute('title') || vueSpan2.textContent || vueSpan2.innerText || '').trim();
-                if (t4 && t4.length > 0 && t4.length < 100) return t4;
               }
               var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
               if (tabText && tabText.length > 0 && tabText.length < 100) {
@@ -1259,7 +1249,8 @@ function analyzeJsonLocal(json, url, size, timestamp) {
 // 1. 从已捕获的JSON响应中提取表格式数据
 // 2. 从HTML <table> 中提取数据
 // 返回：[{ id, type, source, headers, rows, rowCount, colCount, url, selector }]
-async function scanAllSourcesFromWebview() {
+async function scanAllSourcesFromWebview(currentTabTitle) {
+  const tabTitleFilter = typeof currentTabTitle === 'string' && currentTabTitle.trim() ? JSON.stringify(currentTabTitle.trim()) : 'null';
   const scanCode = `
     (function() {
       // 清除旧的导出数据缓存
@@ -1476,10 +1467,19 @@ async function scanAllSourcesFromWebview() {
         ? window.__getCapturedJson()
         : (window.__capturedJsonResponses || []);
       
-      // 只保留最近 expireMinutes 分钟内的响应
+      var filterTabTitle = ${tabTitleFilter};
+      
       const now = Date.now();
       const expireMs = window.__expireMs || (10 * 60 * 1000);
-      const recentResponses = jsonResps.filter(r => (r.timestamp || 0) > now - expireMs);
+      let recentResponses = jsonResps.filter(r => (r.timestamp || 0) > now - expireMs);
+      
+      if (filterTabTitle) {
+        recentResponses = recentResponses.filter(r => {
+          const pt = (r.pageTitle || '').trim().toLowerCase();
+          const ct = filterTabTitle.toLowerCase();
+          return pt === ct || pt.indexOf(ct) >= 0 || ct.indexOf(pt) >= 0;
+        });
+      }
       
       // 按URL去重：同一URL只保留最新的一个
       const urlMap = {};
@@ -1549,7 +1549,7 @@ async function scanAllSourcesFromWebview() {
 }
 
 // 优先从主进程获取已捕获的 JSON 数据，避免 webview 渲染进程因大数据崩溃
-async function scanAllSources() {
+async function scanAllSources(currentTabTitle) {
   let captures = [];
   try {
     if (window.electronAPI && window.electronAPI.getCapturedJson) {
@@ -1562,9 +1562,8 @@ async function scanAllSources() {
     console.log('[scanAllSources] get captured from main failed:', e);
   }
 
-  // 回退：主进程没有数据时，使用 webview 本地扫描
   if (!captures || captures.length === 0) {
-    return await scanAllSourcesFromWebview();
+    return await scanAllSourcesFromWebview(currentTabTitle);
   }
 
   const sources = [];
@@ -1572,14 +1571,20 @@ async function scanAllSources() {
   const now = Date.now();
   const expireMs = getExpireMs();
 
-  // 过滤过期数据
-  const recentCaptures = captures.filter(r => (r.timestamp || 0) > now - expireMs);
+  let filteredCaptures = captures.filter(r => (r.timestamp || 0) > now - expireMs);
 
-  // 按 URL 去重：保留最新的
+  if (currentTabTitle) {
+    filteredCaptures = filteredCaptures.filter(r => {
+      const pt = (r.pageTitle || '').trim().toLowerCase();
+      const ct = currentTabTitle.trim().toLowerCase();
+      return pt === ct || pt.indexOf(ct) >= 0 || ct.indexOf(pt) >= 0;
+    });
+  }
+
   const urlMap = {};
   const captureIndexMap = {};
-  for (let i = 0; i < captures.length; i++) {
-    const resp = captures[i];
+  for (let i = 0; i < filteredCaptures.length; i++) {
+    const resp = filteredCaptures[i];
     if (!resp || !resp.data) continue;
     const urlKey = resp.url || 'unknown';
     if (!urlMap[urlKey] || (resp.timestamp || 0) > (urlMap[urlKey].timestamp || 0)) {
@@ -1893,10 +1898,34 @@ async function scanSelectedHtml() {
 btnExport.addEventListener('click', showExportModal);
 
 async function showExportModal() {
+  const exportOverlay = document.getElementById('exportOverlay');
+  if (exportOverlay) {
+    exportOverlay.classList.add('active');
+  }
   setStatus(tr('statusExtracting'));
 
-  // 1. 扫描所有数据源
-  capturedSources = await scanAllSources();
+  // 获取当前活动Tab页标题，以及从 getSearchDeatil 获取的Tab配置映射
+  let currentTabTitle = '';
+  let tabConfigMap = {};
+  try {
+    const tabInfo = await webview.executeJavaScript(`
+      (function() {
+        var title = '';
+        if (typeof window.__getActiveTabTitle === 'function') {
+          title = window.__getActiveTabTitle();
+        }
+        return {
+          currentTab: title,
+          knownTabs: window.__tabConfigMap || {}
+        };
+      })()
+    `);
+    currentTabTitle = (tabInfo && tabInfo.currentTab) || '';
+    tabConfigMap = (tabInfo && tabInfo.knownTabs) || {};
+  } catch (_) {}
+
+  // 1. 扫描所有数据源（按当前Tab页过滤）
+  capturedSources = await scanAllSources(currentTabTitle);
 
   // 诊断：如果未找到 JSON 数据源，检查 webview 中的捕获状态并尝试回退提取
   if (!capturedSources.some(s => s.type === 'json')) {
@@ -1913,7 +1942,7 @@ async function showExportModal() {
       console.log('JSON capture diag:', diag);
       if (diag && diag.respCount > 0) {
         setStatus('已捕获 ' + diag.respCount + ' 个JSON响应，尝试回退提取...', 'error');
-        const fallbackSources = await scanAllSources();
+        const fallbackSources = await scanAllSources(currentTabTitle);
         if (fallbackSources.length > 0) {
           capturedSources = fallbackSources;
         }
@@ -1921,13 +1950,11 @@ async function showExportModal() {
     } catch (_) {}
   }
 
-  // 2. 过滤 JSON 数据：保留最近 expireMinutes 分钟内的响应，按基础 URL 分组每组保留最新 3 个（支持分页）
   const jsonSources = capturedSources.filter(s => s.type === 'json');
   const htmlSources = capturedSources.filter(s => s.type === 'html');
   const now = Date.now();
   const recentJsonSources = jsonSources.filter(s => (s.timestamp || 0) > now - getExpireMs());
 
-  // 按基础 URL（去掉查询参数）分组
   const grouped = {};
   recentJsonSources.forEach(s => {
     try {
@@ -1942,7 +1969,6 @@ async function showExportModal() {
     }
   });
 
-  // 每组按 timestamp 降序，保留前 3 个（分页数据）
   const filteredJson = [];
   Object.values(grouped).forEach(group => {
     group.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -1952,66 +1978,7 @@ async function showExportModal() {
   capturedSources = [...filteredJson, ...htmlSources];
   capturedSources.sort((a, b) => b.rowCount - a.rowCount);
 
-  // 获取当前活动Tab页标题，用于标记和排序
-  let currentTabTitle = '';
-  try {
-    currentTabTitle = await webview.executeJavaScript(`
-      (function() {
-        var selectors = [
-          '.k-tab.k-active',
-          '.k-tab.active',
-          '.ant-tabs-tab-active', '.el-tabs__item.is-active', '.ivu-tabs-tab-active',
-          '.nav-tabs li.active a', '.tab-content .tab-pane.active .panel-title',
-          '[role="tab"][aria-selected="true"]', '.tabs .tab.active', '.tab-item.active',
-          '.v-tab--active', '.router-link-active', '.active .tab-label', '.active .nav-label',
-          '.cdc-tabs .tab-item.active', '.tabs-nav li.active a', '.tab-nav .active'
-        ];
-        for (var i = 0; i < selectors.length; i++) {
-          var el = document.querySelector(selectors[i]);
-          if (el) {
-            var titleSpan = el.querySelector('span[title]');
-            if (titleSpan) {
-              var t = (titleSpan.getAttribute('title') || '').trim();
-              if (t && t.length > 0 && t.length < 100) return t;
-            }
-            var vueSpan = el.querySelector('span[data-v-e4a060c8]');
-            if (vueSpan) {
-              var t2 = (vueSpan.getAttribute('title') || vueSpan.textContent || vueSpan.innerText || '').trim();
-              if (t2 && t2.length > 0 && t2.length < 100) return t2;
-            }
-            var text = (el.textContent || el.innerText || '').trim();
-            if (text && text.length > 0 && text.length < 100) return text;
-          }
-        }
-        // 尝试查找带关闭按钮的Tab
-        var closeBtns = document.querySelectorAll('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, [class*="close"]');
-        for (var j = 0; j < closeBtns.length; j++) {
-          var tabEl = closeBtns[j].closest('.k-tab, .ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
-          if (tabEl) {
-            var titleSpan2 = tabEl.querySelector('span[title]');
-            if (titleSpan2) {
-              var t3 = (titleSpan2.getAttribute('title') || '').trim();
-              if (t3 && t3.length > 0 && t3.length < 100) return t3;
-            }
-            var vueSpan2 = tabEl.querySelector('span[data-v-e4a060c8]');
-            if (vueSpan2) {
-              var t4 = (vueSpan2.getAttribute('title') || vueSpan2.textContent || vueSpan2.innerText || '').trim();
-              if (t4 && t4.length > 0 && t4.length < 100) return t4;
-            }
-            var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
-            if (tabText && tabText.length > 0 && tabText.length < 100) {
-              if (tabEl.classList.contains('active') || tabEl.classList.contains('k-active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
-                return tabText;
-              }
-            }
-          }
-        }
-        var hash = window.location.hash;
-        if (hash && hash.length > 1 && hash.length < 50) return hash.substring(1);
-        return document.title || '';
-      })()
-    `) || '';
-  } catch (_) {}
+  const isKnownTab = !!tabConfigMap[currentTabTitle];
 
   // 标记每个数据源是否匹配当前Tab页，并按匹配度排序
   if (currentTabTitle) {
@@ -2036,13 +2003,18 @@ async function showExportModal() {
   // 如果获取到了当前Tab页标题，只使用属于当前Tab页的数据
   let filteredSources = capturedSources;
   if (currentTabTitle) {
-    const currentTabSources = capturedSources.filter(s => s.isCurrentTab);
-    if (currentTabSources.length > 0) {
+    let currentTabSources = capturedSources.filter(s => s.isCurrentTab);
+
+    // 如果是已知Tab（从 getSearchDeatil 获取过配置），强制严格匹配当前Tab的JSON数据
+    if (isKnownTab) {
+      currentTabSources = currentTabSources.filter(s => s.type === 'json');
+      if (currentTabSources.length === 0) {
+        setStatus(tr('msgEmptyTable'), 'error');
+        return;
+      }
       filteredSources = currentTabSources;
-    } else {
-      // 当前Tab页没有数据，提示用户
-      setStatus(tr('msgEmptyTable'), 'error');
-      return;
+    } else if (currentTabSources.length > 0) {
+      filteredSources = currentTabSources;
     }
   }
 
@@ -2373,7 +2345,6 @@ async function doExport(source) {
     if (result && result.success) {
       let msg = tr('msgExportSuccess') + ' ' + result.filePath;
       if (result.warning) msg = result.warning;
-      // 使用 DOM API 创建打开文件/文件夹按钮（避免 innerHTML onclick 不可靠）
       statusText.textContent = msg;
       statusText.className = 'status success';
       const actionsSpan = document.createElement('span');
@@ -2391,11 +2362,30 @@ async function doExport(source) {
         (source.type === 'json' ? tr('msgUsingJson') : tr('msgUsingHtml'))
           .replace('{row}', source.rowCount).replace('{col}', source.colCount),
         source.type === 'html');
+
+      if (source.pageTitle) {
+        try {
+          await webview.executeJavaScript(`
+            (function() {
+              if (typeof window.__clearCapturedJsonByTab === 'function') {
+                window.__clearCapturedJsonByTab(${JSON.stringify(source.pageTitle)});
+              }
+            })()
+          `);
+        } catch (_) {}
+      }
     } else {
       setStatus(tr('msgExportFail') + ' ' + (result ? (result.message || '') : ''), 'error');
     }
   } catch (e) {
     setStatus(tr('msgExportFail') + ' ' + (e.message || e), 'error');
+  } finally {
+    try {
+      const exportOverlay = document.getElementById('exportOverlay');
+      if (exportOverlay) {
+        exportOverlay.classList.remove('active');
+      }
+    } catch (_) {}
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "doris-data-export-helper",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Doris 数据导出助手 - 在目标网站外嵌套框架，提取查询结果导出为 Excel",
   "main": "main.js",
   "author": "Doris Export Helper",

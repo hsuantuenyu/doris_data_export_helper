@@ -157,12 +157,11 @@ function createWindow() {
 
 // ========== 主进程 JSON 捕获存储（避免 webview 渲染进程因大数据崩溃） ==========
 let mainCapturedResponses = [];
-const MAX_MAIN_CAPTURES = 30;
+const MAX_MAIN_CAPTURES = 5;
 
 function pushMainCapture(entry) {
   try {
     const now = Date.now();
-    // 同一 URL 5 秒内去重
     const existingIndex = mainCapturedResponses.findIndex(r => r.url === entry.url && (now - r.timestamp) < 5000);
     if (existingIndex !== -1) {
       mainCapturedResponses[existingIndex] = entry;
@@ -170,7 +169,35 @@ function pushMainCapture(entry) {
     }
     mainCapturedResponses.push(entry);
     if (mainCapturedResponses.length > MAX_MAIN_CAPTURES) {
-      mainCapturedResponses.splice(0, mainCapturedResponses.length - MAX_MAIN_CAPTURES);
+      const removed = mainCapturedResponses.splice(0, mainCapturedResponses.length - MAX_MAIN_CAPTURES);
+      for (let i = 0; i < removed.length; i++) {
+        if (removed[i].data) {
+          removed[i].data = null;
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+function clearMainCaptureByIndex(index) {
+  try {
+    if (mainCapturedResponses[index]) {
+      mainCapturedResponses[index].data = null;
+      mainCapturedResponses.splice(index, 1);
+    }
+  } catch (_) {}
+}
+
+function clearMainCaptureByPageTitle(pageTitle) {
+  try {
+    if (!pageTitle) return;
+    const lowerTitle = pageTitle.toLowerCase();
+    for (let i = mainCapturedResponses.length - 1; i >= 0; i--) {
+      const pt = (mainCapturedResponses[i].pageTitle || '').toLowerCase();
+      if (pt === lowerTitle || pt.indexOf(lowerTitle) >= 0 || lowerTitle.indexOf(pt) >= 0) {
+        mainCapturedResponses[i].data = null;
+        mainCapturedResponses.splice(i, 1);
+      }
     }
   } catch (_) {}
 }
@@ -495,7 +522,6 @@ ipcMain.handle('export-excel', async (_event, { sourceInfo, defaultFileName }) =
       return { success: false, message: currentLang === 'zh' ? '文件保存后验证失败，文件大小为0' : 'File verification failed, file size is 0' };
     }
 
-    // 导出成功后清除 webview 中的临时导出缓存，释放内存
     if (wc && sourceInfo.cacheId) {
       try {
         wc.executeJavaScript(`
@@ -506,6 +532,10 @@ ipcMain.handle('export-excel', async (_event, { sourceInfo, defaultFileName }) =
           })()
         `);
       } catch (_) {}
+    }
+
+    if (typeof sourceInfo.mainCaptureIndex === 'number') {
+      clearMainCaptureByIndex(sourceInfo.mainCaptureIndex);
     }
 
     return { success: true, filePath: finalPath, warning };

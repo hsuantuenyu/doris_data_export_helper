@@ -8,6 +8,10 @@
   } catch (_) {}
 
   window.__captchaCode = '';
+  window.__tabConfigMap = {};
+  window.__tabResultMap = {};
+
+
 
   function isCaptchaUrl(url) {
     return typeof url === 'string' && /(?:^|\/)api\/code(?:[?#]|$)/i.test(url);
@@ -25,7 +29,23 @@
   window.__capturedJsonResponses = window.__capturedJsonResponses || [];
   window.__jsonCaptureInstalled = true;
   window.__getCapturedJson = function() { return window.__capturedJsonResponses || []; };
-  window.__clearCapturedJson = function() { window.__capturedJsonResponses = []; };
+window.__clearCapturedJson = function() { window.__capturedJsonResponses = []; };
+window.__clearCapturedJsonByTab = function(tabTitle) {
+  try {
+    if (!tabTitle || !window.__capturedJsonResponses) return;
+    const lowerTitle = tabTitle.toLowerCase();
+    for (let i = window.__capturedJsonResponses.length - 1; i >= 0; i--) {
+      const pt = (window.__capturedJsonResponses[i].pageTitle || '').toLowerCase();
+      if (pt === lowerTitle || pt.indexOf(lowerTitle) >= 0 || lowerTitle.indexOf(pt) >= 0) {
+        window.__capturedJsonResponses[i].data = null;
+        window.__capturedJsonResponses.splice(i, 1);
+      }
+    }
+    if (window.__tabResultMap && window.__tabResultMap[tabTitle]) {
+      delete window.__tabResultMap[tabTitle];
+    }
+  } catch (_) {}
+};
 
   const BIG_RESPONSE_THRESHOLD = 5 * 1024 * 1024;
   const HUGE_RESPONSE_THRESHOLD = 20 * 1024 * 1024;
@@ -146,12 +166,6 @@
             var t = (titleSpan.getAttribute('title') || '').trim();
             if (t && t.length > 0 && t.length < 100) return t;
           }
-          // 尝试查找带有Vue组件标识的Tab标题
-          var vueSpan = el.querySelector('span[data-v-e4a060c8]');
-          if (vueSpan) {
-            var t2 = (vueSpan.getAttribute('title') || vueSpan.textContent || vueSpan.innerText || '').trim();
-            if (t2 && t2.length > 0 && t2.length < 100) return t2;
-          }
           var text = (el.textContent || el.innerText || '').trim();
           if (text && text.length > 0 && text.length < 100) {
             return text;
@@ -182,22 +196,50 @@
       return document.title || '';
     }
   }
+  window.__getActiveTabTitle = getActiveTabTitle;
 
-  function pushResponse(url, data, size) {
+  function pushResponse(url, data, size, requestTabTitle, requestStartTime) {
     try {
+      if (/getSearchDeatil/i.test(url || '')) {
+        try {
+          const tabName = data && data.result && data.result.name ? data.result.name : '';
+          const sql = data && data.result && data.result.content && data.result.content.sql ? data.result.content.sql : '';
+          const searchIdMatch = (url || '').match(/[?&]searchId=(\d+)/);
+          if (tabName) {
+            window.__tabConfigMap[tabName] = {
+              searchId: searchIdMatch ? searchIdMatch[1] : '',
+              sql: sql,
+              timestamp: Date.now()
+            };
+          }
+        } catch(_) {}
+      }
+
       const rowCount = estimateRowCount(data);
       const isBig = (size || 0) > BIG_RESPONSE_THRESHOLD || rowCount > BIG_ROW_THRESHOLD;
       const isHuge = (size || 0) > HUGE_RESPONSE_THRESHOLD || rowCount > HUGE_ROW_THRESHOLD;
+      const tabTitle = requestTabTitle || getActiveTabTitle();
+      const entryTimestamp = requestStartTime || Date.now();
+
+      if (tabTitle && window.__tabConfigMap[tabTitle] && rowCount > 0 && !/getSearchDeatil/i.test(url || '')) {
+        window.__tabResultMap[tabTitle] = {
+          url: url || 'unknown',
+          timestamp: entryTimestamp,
+          rowCount: rowCount,
+          size: size || 0
+        };
+      }
 
       const entry = {
         url: url || 'unknown',
-        timestamp: Date.now(),
+        timestamp: entryTimestamp,
         size: size || 0,
         data: data,
         rowCount: rowCount,
         isBig: isBig,
         isHuge: isHuge,
-        pageTitle: getActiveTabTitle()
+        pageTitle: tabTitle,
+        requestStartTime: requestStartTime
       };
 
       if (ipcRenderer) {
@@ -291,9 +333,13 @@
     const xhr = new OriginalXHR();
     const originalOpen = xhr.open;
     let requestUrl = '';
+    let requestTabTitle = '';
+    let requestStartTime = 0;
 
     xhr.open = function(method, url, ...rest) {
       requestUrl = url;
+      requestTabTitle = getActiveTabTitle();
+      requestStartTime = Date.now();
       return originalOpen.apply(xhr, [method, url, ...rest]);
     };
 
@@ -336,7 +382,7 @@
                     } catch (_) {}
                   }
 
-                  pushResponse(requestUrl, parsedData, respSize);
+                  pushResponse(requestUrl, parsedData, respSize, requestTabTitle, requestStartTime);
                 } catch (_) {}
               });
               return;
@@ -349,7 +395,7 @@
             const rowCount = estimateRowCount(data);
             const isBig = size > BIG_RESPONSE_THRESHOLD || rowCount > BIG_ROW_THRESHOLD;
 
-            pushResponse(requestUrl, data, size);
+            pushResponse(requestUrl, data, size, requestTabTitle, requestStartTime);
 
             if (rowCount > RENDER_ROW_LIMIT) {
               try {
@@ -377,12 +423,16 @@
   window.XMLHttpRequest.prototype = OriginalXHR.prototype;
 
   let currentFetchUrl = '';
+  const fetchRequestInfo = new WeakMap();
   const originalFetch = window.fetch;
   window.fetch = async function(...args) {
     const url = args[0];
     const urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : 'fetch');
     currentFetchUrl = urlStr;
+    const requestTabTitle = getActiveTabTitle();
+    const requestStartTime = Date.now();
     const response = await originalFetch.apply(this, args);
+    fetchRequestInfo.set(response, { tabTitle: requestTabTitle, startTime: requestStartTime });
 
     if (isCaptchaUrl(urlStr) && response.clone) {
       try {
@@ -397,7 +447,6 @@
       } catch(_) {}
     }
 
-    currentFetchUrl = '';
     return response;
   };
 
@@ -405,6 +454,9 @@
   Response.prototype.json = function() {
     const resp = this;
     const url = currentFetchUrl || (resp.url || '');
+    const requestInfo = fetchRequestInfo.get(resp) || {};
+    const requestTabTitle = requestInfo.tabTitle || '';
+    const requestStartTime = requestInfo.startTime || Date.now();
     const origPromise = originalResponseJson.apply(this, arguments);
     return origPromise.then(function(data) {
       try {
@@ -421,7 +473,7 @@
           const approxRows = fastEstimateRowCount(data);
           const isBig = size > BIG_RESPONSE_THRESHOLD || approxRows > BIG_ROW_THRESHOLD;
 
-          pushResponse(url, data, size);
+          pushResponse(url, data, size, requestTabTitle, requestStartTime);
 
           if (approxRows > RENDER_ROW_LIMIT) {
             try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
@@ -444,11 +496,22 @@
       const btn = e.target && e.target.closest && e.target.closest('button, input[type="submit"], input[type="button"], [role="button"], .btn, .ant-btn, .el-button');
       if (!btn) return;
       if (isQueryButton(btn)) {
+        const activeTab = getActiveTabTitle();
+        // 清空当前 Tab 的结果映射
+        if (activeTab && window.__tabResultMap[activeTab]) {
+          delete window.__tabResultMap[activeTab];
+        }
         setTimeout(function() {
           try {
             if (window.__capturedJsonResponses && window.__capturedJsonResponses.length > 0) {
               window.__capturedJsonResponses = [];
               window.__exportDataCache = {};
+            }
+            // 同时通知主进程清空捕获数据，避免旧数据干扰
+            if (ipcRenderer) {
+              try {
+                ipcRenderer.invoke('clear-captured-json').catch(function(){});
+              } catch (_) {}
             }
           } catch (_) {}
         }, 500);
