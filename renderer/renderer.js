@@ -2422,6 +2422,26 @@ async function doExport(source) {
         (source.type === 'json' ? tr('msgUsingJson') : tr('msgUsingHtml'))
           .replace('{row}', source.rowCount).replace('{col}', source.colCount),
         source.type === 'html');
+
+      // 导出完成后释放内存：清理当前Tab的数据
+      try {
+        const currentTabTitle = getActiveTabTitle();
+        if (currentTabTitle) {
+          if (window.electronAPI && window.electronAPI.clearCapturedJson) {
+            window.electronAPI.clearCapturedJson();
+          }
+          try {
+            webview.executeJavaScript(`
+              if (window.__capturedJsonResponses) {
+                window.__capturedJsonResponses = [];
+              }
+              if (window.__tabResultMap) {
+                delete window.__tabResultMap['${currentTabTitle.replace(/'/g, "\\'")}'];
+              }
+            `);
+          } catch (_) {}
+        }
+      } catch (_) {}
     } else {
       setStatus(tr('msgExportFail') + ' ' + (result ? (result.message || '') : ''), 'error');
     }

@@ -47,12 +47,12 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   } catch (_) {}
 };
 
-  const BIG_RESPONSE_THRESHOLD = 2 * 1024 * 1024;
-  const HUGE_RESPONSE_THRESHOLD = 5 * 1024 * 1024;
+  const BIG_RESPONSE_THRESHOLD = 1 * 1024 * 1024;
+  const HUGE_RESPONSE_THRESHOLD = 2 * 1024 * 1024;
   const MAX_BIG_KEEP = 1;
   const MAX_SMALL_KEEP = 5;
-  const BIG_ROW_THRESHOLD = 15000;
-  const HUGE_ROW_THRESHOLD = 30000;
+  const BIG_ROW_THRESHOLD = 10000;
+  const HUGE_ROW_THRESHOLD = 15000;
   const RENDER_ROW_LIMIT = 5000;
 
   function truncateDataForRender(data, limit) {
@@ -457,28 +457,21 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       } catch(_) {}
     }
 
-    // 大数据预检：通过 Content-Length 提前判断，超过阈值时克隆响应并直接发到主进程存文件
+    // 大数据预检：通过 Content-Length 提前判断，超过阈值时通知主进程直接重新请求并保存，webview 不读取任何响应内容
     try {
-      if (shouldCaptureUrl(urlStr) && response.clone) {
+      if (shouldCaptureUrl(urlStr)) {
         const cl = response.headers && response.headers.get ? response.headers.get('content-length') : null;
         const size = cl ? (parseInt(cl, 10) || 0) : 0;
         if (size > HUGE_RESPONSE_THRESHOLD) {
-          // 标记此响应是 huge，避免后面再处理
           fetchRequestInfo.get(response).preServedAsFile = true;
-          const cloned = response.clone();
-          cloned.text().then(function(text) {
-            try {
-              if (ipcRenderer) {
-                ipcRenderer.send('json-captured-text', {
-                  url: urlStr,
-                  text: text,
-                  size: size,
-                  pageTitle: requestTabTitle,
-                  timestamp: requestStartTime
-                });
-              }
-            } catch (e) {}
-          }).catch(function(){});
+          if (ipcRenderer) {
+            ipcRenderer.send('re-fetch-and-save', {
+              url: urlStr,
+              method: 'GET',
+              pageTitle: requestTabTitle,
+              timestamp: requestStartTime
+            });
+          }
         }
       }
     } catch (_) {}

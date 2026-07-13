@@ -34,7 +34,7 @@
       "package.json",
       "!dist/**/*"
     ],
-    "asar": true,
+    "asar": false,
     "win": {
       "target": [
         { "target": "portable", "arch": ["x64"] }

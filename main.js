@@ -462,6 +462,82 @@ ipcMain.on('json-captured-text', (_event, payload) => {
   } catch (e) {}
 });
 
+// 监听 webview 请求主进程重新获取大数据并保存（webview 不读取响应以避免内存溢出）
+ipcMain.on('re-fetch-and-save', (_event, payload) => {
+  try {
+    if (!payload || !payload.url) return;
+    const url = payload.url;
+    const tabName = sanitizeFileName(payload.pageTitle || 'tab');
+    const timestamp = payload.timestamp || Date.now();
+    const fileName = tabName + '_' + timestamp + '.json';
+    const filePath = path.join(jsonCacheDir, fileName);
+
+    const http = url.startsWith('https') ? require('https') : require('http');
+    const urlObj = new URL(url);
+
+    if (!mainWindow || !mainWindow.webContents) return;
+
+    mainWindow.webContents.session.cookies.get({ url: urlObj.origin }, (error, cookies) => {
+      if (error) {
+        console.error('[re-fetch-and-save] get cookies error:', error);
+        return;
+      }
+
+      const cookieHeader = cookies.map(c => c.name + '=' + c.value).join('; ');
+      const options = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (url.startsWith('https') ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method: payload.method || 'GET',
+        headers: {
+          'Cookie': cookieHeader,
+          'Accept': 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+        rejectUnauthorized: false
+      };
+
+      const req = http.request(options, (res) => {
+        let rawData = '';
+        res.on('data', (chunk) => {
+          rawData += chunk;
+        });
+        res.on('end', () => {
+          try {
+            fs.writeFileSync(filePath, rawData, 'utf-8');
+            let analysis = null;
+            try {
+              const data = JSON.parse(rawData);
+              analysis = analyzeJsonStructure(data);
+            } catch (e) {}
+            const info = {
+              filePath, fileName,
+              tabName: payload.pageTitle || '',
+              url: url,
+              timestamp, size: rawData.length,
+              rowCount: analysis ? analysis.rowCount : 0,
+              headers: analysis ? analysis.headers : [],
+              colCount: analysis ? analysis.colCount : 0,
+              path: analysis ? analysis.path : ''
+            };
+            pushJsonFileCache(info);
+          } catch (e) {
+            console.error('[re-fetch-and-save] save error:', e);
+          }
+        });
+      });
+
+      req.on('error', (e) => {
+        console.error('[re-fetch-and-save] request error:', e);
+      });
+
+      req.end();
+    });
+  } catch (e) {
+    console.error('[re-fetch-and-save] error:', e);
+  }
+});
+
 // 获取文件缓存列表
 ipcMain.handle('get-json-file-list', () => {
   return { success: true, files: getJsonFileCacheList() };
