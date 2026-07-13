@@ -6,7 +6,16 @@ const api = {
   getWebviewPreload: () => {
     try {
       const path = require('path');
-      return path.join(__dirname, 'renderer', 'webview-preload.js');
+      let preloadPath = path.join(__dirname, 'renderer', 'webview-preload.js');
+      const fs = require('fs');
+      if (fs.existsSync(preloadPath)) {
+        return preloadPath;
+      }
+      const asarUnpacked = path.join(__dirname.replace('app.asar', 'app.asar.unpacked'), 'renderer', 'webview-preload.js');
+      if (fs.existsSync(asarUnpacked)) {
+        return asarUnpacked;
+      }
+      return preloadPath;
     } catch (_) {
       return '';
     }
@@ -26,6 +35,11 @@ const api = {
     ipcRenderer.on('menu-export', handler);
     return () => ipcRenderer.removeListener('menu-export', handler);
   },
+  onExportProgress: (callback) => {
+    const handler = (_event, data) => callback(data);
+    ipcRenderer.on('export-progress', handler);
+    return () => ipcRenderer.removeListener('export-progress', handler);
+  },
   getCredentials: (data) => ipcRenderer.invoke('get-credentials', data),
   saveCredentials: (data) => ipcRenderer.invoke('save-credentials', data),
   deleteCredentials: (data) => ipcRenderer.invoke('delete-credentials', data),
@@ -36,6 +50,7 @@ const api = {
   ocrCaptcha: (base64Image) => ipcRenderer.invoke('ocr-captcha', base64Image),
   getCapturedJson: () => ipcRenderer.invoke('get-captured-json'),
   clearCapturedJson: () => ipcRenderer.invoke('clear-captured-json'),
+  getJsonFileList: () => ipcRenderer.invoke('get-json-file-list'),
 };
 
 try {

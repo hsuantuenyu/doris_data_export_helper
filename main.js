@@ -8,8 +8,11 @@ const { createWorker } = require('tesseract.js');
 const packageJson = require('./package.json');
 const appVersion = packageJson.version || '1.0.0';
 
-// 增加 V8 堆内存限制到 4GB，避免大数据场景下 webview OOM 崩溃
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
+app.commandLine.appendSwitch('disable-software-rasterizer');
+app.commandLine.appendSwitch('disable-gpu-watchdog');
+app.commandLine.appendSwitch('max-active-webgl-contexts', '16');
+app.commandLine.appendSwitch('renderer-process-limit', '1');
 
 let mainWindow;
 let currentLang = 'zh';
@@ -26,6 +29,120 @@ function getDataDir() {
 const dataDir = getDataDir();
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
+}
+
+const jsonCacheDir = path.join(dataDir, 'json_cache');
+if (!fs.existsSync(jsonCacheDir)) {
+  fs.mkdirSync(jsonCacheDir, { recursive: true });
+}
+
+function sanitizeFileName(name) {
+  return (name || 'unknown').replace(/[\\/:*?"<>|]/g, '_').substring(0, 100);
+}
+
+function analyzeJsonStructure(data) {
+  try {
+    const DATA_KEYS = ['result', 'data', 'rows', 'records', 'list', 'items',
+      'tableData', 'payload', 'content', 'listData', 'dataList',
+      'queryResult', 'query_data', 'searchResult', 'RECORDS'];
+
+    function findArray(obj, depth, currentPath) {
+      if (depth > 5 || !obj || typeof obj !== 'object') return null;
+      if (Array.isArray(obj) && obj.length > 0 && obj[0] && typeof obj[0] === 'object') {
+        return { array: obj, path: currentPath };
+      }
+      for (let i = 0; i < DATA_KEYS.length; i++) {
+        const val = obj[DATA_KEYS[i]];
+        if (Array.isArray(val) && val.length > 0) {
+          const found = findArray(val, depth + 1, currentPath + (currentPath ? '.' : '') + DATA_KEYS[i]);
+          if (found) return found;
+        }
+        if (val && typeof val === 'object') {
+          const found = findArray(val, depth + 1, currentPath + (currentPath ? '.' : '') + DATA_KEYS[i]);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+
+    let result = null;
+    if (Array.isArray(data) && data.length > 0 && data[0] && typeof data[0] === 'object') {
+      result = { array: data, path: '' };
+    } else {
+      result = findArray(data, 0, '');
+    }
+
+    if (result && result.array && result.array.length > 0) {
+      const firstItem = result.array[0];
+      return {
+        headers: Object.keys(firstItem),
+        rowCount: result.array.length,
+        colCount: Object.keys(firstItem).length,
+        path: result.path
+      };
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveJsonToFile(entry) {
+  try {
+    const tabName = sanitizeFileName(entry.pageTitle || 'tab');
+    const timestamp = entry.timestamp || Date.now();
+    const fileName = tabName + '_' + timestamp + '.json';
+    const filePath = path.join(jsonCacheDir, fileName);
+    fs.writeFileSync(filePath, JSON.stringify(entry.data), 'utf-8');
+    const analysis = analyzeJsonStructure(entry.data);
+    return {
+      filePath, fileName,
+      tabName: entry.pageTitle || '',
+      url: entry.url,
+      timestamp, size: entry.size,
+      rowCount: entry.rowCount,
+      headers: analysis ? analysis.headers : [],
+      colCount: analysis ? analysis.colCount : 0,
+      path: analysis ? analysis.path : ''
+    };
+  } catch (e) {
+    console.error('[saveJsonToFile] error:', e.message);
+    return null;
+  }
+}
+
+let jsonFileCacheList = [];
+
+function pushJsonFileCache(info) {
+  if (!info) return;
+  jsonFileCacheList.push(info);
+  if (jsonFileCacheList.length > 10) {
+    const removed = jsonFileCacheList.splice(0, jsonFileCacheList.length - 10);
+    for (let i = 0; i < removed.length; i++) {
+      try {
+        if (removed[i] && removed[i].filePath && fs.existsSync(removed[i].filePath)) {
+          fs.unlinkSync(removed[i].filePath);
+        }
+      } catch (_) {}
+    }
+  }
+}
+
+function getJsonFileCacheList() {
+  return jsonFileCacheList.filter(f => f && f.filePath && fs.existsSync(f.filePath));
+}
+
+function clearJsonFileCache() {
+  try {
+    for (let i = 0; i < jsonFileCacheList.length; i++) {
+      try {
+        if (jsonFileCacheList[i] && jsonFileCacheList[i].filePath && fs.existsSync(jsonFileCacheList[i].filePath)) {
+          fs.unlinkSync(jsonFileCacheList[i].filePath);
+        }
+      } catch (_) {}
+    }
+    jsonFileCacheList = [];
+  } catch (_) {}
 }
 
 // 开发环境覆盖 userData，打包环境使用默认
@@ -155,9 +272,8 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
-// ========== 主进程 JSON 捕获存储（避免 webview 渲染进程因大数据崩溃） ==========
 let mainCapturedResponses = [];
-const MAX_MAIN_CAPTURES = 5;
+const MAX_MAIN_CAPTURES = 30;
 
 function pushMainCapture(entry) {
   try {
@@ -169,35 +285,7 @@ function pushMainCapture(entry) {
     }
     mainCapturedResponses.push(entry);
     if (mainCapturedResponses.length > MAX_MAIN_CAPTURES) {
-      const removed = mainCapturedResponses.splice(0, mainCapturedResponses.length - MAX_MAIN_CAPTURES);
-      for (let i = 0; i < removed.length; i++) {
-        if (removed[i].data) {
-          removed[i].data = null;
-        }
-      }
-    }
-  } catch (_) {}
-}
-
-function clearMainCaptureByIndex(index) {
-  try {
-    if (mainCapturedResponses[index]) {
-      mainCapturedResponses[index].data = null;
-      mainCapturedResponses.splice(index, 1);
-    }
-  } catch (_) {}
-}
-
-function clearMainCaptureByPageTitle(pageTitle) {
-  try {
-    if (!pageTitle) return;
-    const lowerTitle = pageTitle.toLowerCase();
-    for (let i = mainCapturedResponses.length - 1; i >= 0; i--) {
-      const pt = (mainCapturedResponses[i].pageTitle || '').toLowerCase();
-      if (pt === lowerTitle || pt.indexOf(lowerTitle) >= 0 || lowerTitle.indexOf(pt) >= 0) {
-        mainCapturedResponses[i].data = null;
-        mainCapturedResponses.splice(i, 1);
-      }
+      mainCapturedResponses.splice(0, mainCapturedResponses.length - MAX_MAIN_CAPTURES);
     }
   } catch (_) {}
 }
@@ -294,7 +382,89 @@ ipcMain.handle('get-captured-json', () => {
 // renderer 清空捕获
 ipcMain.handle('clear-captured-json', () => {
   clearMainCaptures();
+  clearJsonFileCache();
   return { success: true };
+});
+
+// webview 发送大数据到主进程保存为文件（避免 webview 内存溢出）
+ipcMain.handle('save-json-file', (_event, entry) => {
+  try {
+    if (!entry || !entry.data || typeof entry.data !== 'object') {
+      return { success: false, message: 'invalid data' };
+    }
+    const info = saveJsonToFile(entry);
+    if (info) {
+      pushJsonFileCache(info);
+      entry.data = null;
+      return { success: true, info };
+    }
+    return { success: false, message: 'save failed' };
+  } catch (e) {
+    return { success: false, message: e.message };
+  }
+});
+
+// webview 直接发送 JSON 文本到主进程（避免 IPC 结构化克隆的内存开销）
+ipcMain.handle('save-json-text', (_event, payload) => {
+  try {
+    if (!payload || !payload.text) {
+      return { success: false, message: 'invalid payload' };
+    }
+    const tabName = sanitizeFileName(payload.pageTitle || 'tab');
+    const timestamp = payload.timestamp || Date.now();
+    const fileName = tabName + '_' + timestamp + '.json';
+    const filePath = path.join(jsonCacheDir, fileName);
+    fs.writeFileSync(filePath, payload.text, 'utf-8');
+    const data = JSON.parse(payload.text);
+    const analysis = analyzeJsonStructure(data);
+    const info = {
+      filePath, fileName,
+      tabName: payload.pageTitle || '',
+      url: payload.url || '',
+      timestamp, size: payload.size || 0,
+      rowCount: analysis ? analysis.rowCount : 0,
+      headers: analysis ? analysis.headers : [],
+      colCount: analysis ? analysis.colCount : 0,
+      path: analysis ? analysis.path : ''
+    };
+    pushJsonFileCache(info);
+    return { success: true, info };
+  } catch (e) {
+    return { success: false, message: e.message };
+  }
+});
+
+// 监听 webview 发送的 JSON 文本（大数预存为文件）
+ipcMain.on('json-captured-text', (_event, payload) => {
+  try {
+    if (!payload || !payload.text) return;
+    const tabName = sanitizeFileName(payload.pageTitle || 'tab');
+    const timestamp = payload.timestamp || Date.now();
+    const fileName = tabName + '_' + timestamp + '.json';
+    const filePath = path.join(jsonCacheDir, fileName);
+    fs.writeFileSync(filePath, payload.text, 'utf-8');
+    let analysis = null;
+    try {
+      const data = JSON.parse(payload.text);
+      analysis = analyzeJsonStructure(data);
+    } catch (e) {}
+    const info = {
+      filePath, fileName,
+      tabName: payload.pageTitle || '',
+      url: payload.url || '',
+      timestamp, size: payload.size || 0,
+      rowCount: analysis ? analysis.rowCount : 0,
+      headers: analysis ? analysis.headers : [],
+      colCount: analysis ? analysis.colCount : 0,
+      path: analysis ? analysis.path : ''
+    };
+    pushJsonFileCache(info);
+  } catch (e) {}
+});
+
+// 获取文件缓存列表
+ipcMain.handle('get-json-file-list', () => {
+  return { success: true, files: getJsonFileCacheList() };
 });
 
 // 打开文件/文件夹
@@ -375,9 +545,51 @@ ipcMain.handle('export-excel', async (_event, { sourceInfo, defaultFileName }) =
 
     // 4. 写入数据行
     if (sourceInfo.rows && sourceInfo.rows.length > 0) {
-      // 小数据模式：直接写入传入的 rows（如手动选择器模式）
       for (const row of sourceInfo.rows) {
         ws.addRow(row);
+      }
+    } else if (sourceInfo.jsonFilePath && fs.existsSync(sourceInfo.jsonFilePath)) {
+      // 文件缓存模式：从JSON文件读取数据导出，避免内存占用
+      const fileData = JSON.parse(fs.readFileSync(sourceInfo.jsonFilePath, 'utf-8'));
+      const arr = getArrayByPath(fileData, sourceInfo.path);
+      if (Array.isArray(arr)) {
+        const BATCH_SIZE = 5000;
+        const headers = sourceInfo.headers;
+        const totalRows = arr.length;
+        let processed = 0;
+        for (let i = 0; i < arr.length; i += BATCH_SIZE) {
+          const end = Math.min(i + BATCH_SIZE, arr.length);
+          for (let idx = i; idx < end; idx++) {
+            const item = arr[idx];
+            if (item && typeof item === 'object' && !Array.isArray(item)) {
+              const row = [];
+              for (let h = 0; h < headers.length; h++) {
+                const v = item[headers[h]];
+                if (v === null || v === undefined) row.push('');
+                else if (typeof v === 'object') row.push(JSON.stringify(v));
+                else row.push(v);
+              }
+              ws.addRow(row);
+            } else if (Array.isArray(item)) {
+              const row = [];
+              for (let h = 0; h < item.length; h++) {
+                const v = item[h];
+                if (v === null || v === undefined) row.push('');
+                else if (typeof v === 'object') row.push(JSON.stringify(v));
+                else row.push(v);
+              }
+              ws.addRow(row);
+            } else {
+              ws.addRow([item]);
+            }
+          }
+          processed += (end - i);
+          if (mainWindow) {
+            mainWindow.webContents.send('export-progress', { processed, total: totalRows });
+          }
+        }
+      } else {
+        return { success: false, message: currentLang === 'zh' ? '文件数据中未找到对应数组，请重新查询' : 'Array not found in file data, please re-query' };
       }
     } else if (typeof sourceInfo.mainCaptureIndex === 'number' && mainCapturedResponses[sourceInfo.mainCaptureIndex]) {
       const capture = mainCapturedResponses[sourceInfo.mainCaptureIndex];
@@ -534,24 +746,8 @@ ipcMain.handle('export-excel', async (_event, { sourceInfo, defaultFileName }) =
       } catch (_) {}
     }
 
-    if (typeof sourceInfo.mainCaptureIndex === 'number') {
-      clearMainCaptureByIndex(sourceInfo.mainCaptureIndex);
-    }
-
     return { success: true, filePath: finalPath, warning };
   } catch (e) {
-    // 导出失败时也尝试清理缓存
-    if (wc && sourceInfo.cacheId) {
-      try {
-        wc.executeJavaScript(`
-          (function() {
-            if (window.__exportDataCache && window.__exportDataCache['${sourceInfo.cacheId}']) {
-              delete window.__exportDataCache['${sourceInfo.cacheId}'];
-            }
-          })()
-        `);
-      } catch (_) {}
-    }
     return { success: false, message: e.message || String(e) };
   }
 });

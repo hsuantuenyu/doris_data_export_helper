@@ -47,12 +47,12 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   } catch (_) {}
 };
 
-  const BIG_RESPONSE_THRESHOLD = 5 * 1024 * 1024;
-  const HUGE_RESPONSE_THRESHOLD = 20 * 1024 * 1024;
+  const BIG_RESPONSE_THRESHOLD = 2 * 1024 * 1024;
+  const HUGE_RESPONSE_THRESHOLD = 5 * 1024 * 1024;
   const MAX_BIG_KEEP = 1;
   const MAX_SMALL_KEEP = 5;
-  const BIG_ROW_THRESHOLD = 50000;
-  const HUGE_ROW_THRESHOLD = 100000;
+  const BIG_ROW_THRESHOLD = 15000;
+  const HUGE_ROW_THRESHOLD = 30000;
   const RENDER_ROW_LIMIT = 5000;
 
   function truncateDataForRender(data, limit) {
@@ -230,6 +230,42 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         };
       }
 
+      if (isHuge && ipcRenderer) {
+        try {
+          const entryForFile = {
+            url: url || 'unknown',
+            timestamp: entryTimestamp,
+            size: size || 0,
+            data: data,
+            rowCount: rowCount,
+            pageTitle: tabTitle
+          };
+          ipcRenderer.invoke('save-json-file', entryForFile).then(function(r) {
+            if (r && r.success && r.info) {
+              const lightEntry = {
+                url: url || 'unknown',
+                timestamp: entryTimestamp,
+                size: size || 0,
+                data: null,
+                rowCount: rowCount,
+                isBig: true,
+                isHuge: true,
+                pageTitle: tabTitle,
+                isFileCached: true,
+                filePath: r.info.filePath,
+                requestStartTime: requestStartTime
+              };
+              window.__capturedJsonResponses.push(lightEntry);
+              if (window.__capturedJsonResponses.length > MAX_BIG_KEEP) {
+                window.__capturedJsonResponses.splice(0, window.__capturedJsonResponses.length - MAX_BIG_KEEP);
+              }
+              entryForFile.data = null;
+            }
+          }).catch(function() {});
+          return;
+        } catch (_) {}
+      }
+
       const entry = {
         url: url || 'unknown',
         timestamp: entryTimestamp,
@@ -248,7 +284,6 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         } catch (_) {}
       }
 
-      // 内存优化：大数据已发送到主进程后，释放webv_view中的data以减少内存占用，防止崩溃
       if (ipcRenderer && (isBig || isHuge)) {
         entry.data = null;
       }
@@ -257,15 +292,19 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
 
       const maxKeep = isBig ? MAX_BIG_KEEP : MAX_SMALL_KEEP;
       if (window.__capturedJsonResponses.length > maxKeep) {
-        window.__capturedJsonResponses.splice(0, window.__capturedJsonResponses.length - maxKeep);
+        const removed = window.__capturedJsonResponses.splice(0, window.__capturedJsonResponses.length - maxKeep);
+        for (let ri = 0; ri < removed.length; ri++) {
+          if (removed[ri] && removed[ri].data) {
+            removed[ri].data = null;
+          }
+        }
       }
 
-      // 进一步内存优化：如果webv_view中累积的数据总大小超过阈值，清理所有旧数据的data字段
       var totalSize = 0;
       for (var j = 0; j < window.__capturedJsonResponses.length; j++) {
         totalSize += window.__capturedJsonResponses[j].size || 0;
       }
-      if (totalSize > 50 * 1024 * 1024) { // 50MB
+      if (totalSize > 20 * 1024 * 1024) {
         for (var k = 0; k < window.__capturedJsonResponses.length; k++) {
           if (window.__capturedJsonResponses[k].data) {
             window.__capturedJsonResponses[k].data = null;
@@ -278,6 +317,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   function shouldCaptureUrl(url) {
     if (typeof url !== 'string') return false;
     if (/\.(js|css|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|ico|map)(\?|$)/i.test(url)) return false;
+    if (/\/ds-standard-query\/cacheData\//i.test(url)) return false;
     return true;
   }
 
@@ -288,44 +328,14 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   }
 
   function processBigResponseAsync(url, text, size, callback) {
-    const startTime = Date.now();
-    const CHUNK_SIZE = 5000;
-    let remaining = text;
-    let parsedParts = [];
-
-    function parseChunk() {
-      if (remaining.length === 0) {
-        try {
-          const data = JSON.parse(parsedParts.join(''));
-          callback(data);
-        } catch (err) {
-          try {
-            const data = JSON.parse(text);
-            callback(data);
-          } catch (_) {
-            callback(null);
-          }
-        }
-        return;
+    setTimeout(function() {
+      try {
+        const data = JSON.parse(text);
+        callback(data);
+      } catch (_) {
+        callback(null);
       }
-
-      const chunk = remaining.substring(0, CHUNK_SIZE);
-      remaining = remaining.substring(CHUNK_SIZE);
-      parsedParts.push(chunk);
-
-      if (Date.now() - startTime > 100) {
-        setTimeout(parseChunk, 0);
-      } else {
-        parseChunk();
-      }
-    }
-
-    try {
-      const data = JSON.parse(text);
-      callback(data);
-    } catch (err) {
-      setTimeout(parseChunk, 0);
-    }
+    }, 10);
   }
 
   const OriginalXHR = window.XMLHttpRequest;
@@ -432,7 +442,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     const requestTabTitle = getActiveTabTitle();
     const requestStartTime = Date.now();
     const response = await originalFetch.apply(this, args);
-    fetchRequestInfo.set(response, { tabTitle: requestTabTitle, startTime: requestStartTime });
+    fetchRequestInfo.set(response, { tabTitle: requestTabTitle, startTime: requestStartTime, url: urlStr });
 
     if (isCaptchaUrl(urlStr) && response.clone) {
       try {
@@ -447,6 +457,32 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       } catch(_) {}
     }
 
+    // 大数据预检：通过 Content-Length 提前判断，超过阈值时克隆响应并直接发到主进程存文件
+    try {
+      if (shouldCaptureUrl(urlStr) && response.clone) {
+        const cl = response.headers && response.headers.get ? response.headers.get('content-length') : null;
+        const size = cl ? (parseInt(cl, 10) || 0) : 0;
+        if (size > HUGE_RESPONSE_THRESHOLD) {
+          // 标记此响应是 huge，避免后面再处理
+          fetchRequestInfo.get(response).preServedAsFile = true;
+          const cloned = response.clone();
+          cloned.text().then(function(text) {
+            try {
+              if (ipcRenderer) {
+                ipcRenderer.send('json-captured-text', {
+                  url: urlStr,
+                  text: text,
+                  size: size,
+                  pageTitle: requestTabTitle,
+                  timestamp: requestStartTime
+                });
+              }
+            } catch (e) {}
+          }).catch(function(){});
+        }
+      }
+    } catch (_) {}
+
     return response;
   };
 
@@ -457,6 +493,28 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     const requestInfo = fetchRequestInfo.get(resp) || {};
     const requestTabTitle = requestInfo.tabTitle || '';
     const requestStartTime = requestInfo.startTime || Date.now();
+
+    // 如果已经在 fetch 阶段处理为文件缓存，阻断原始 .json() 解析以避免 webview 内存耗尽
+    if (requestInfo.preServedAsFile) {
+      const cl = resp.headers && resp.headers.get ? resp.headers.get('content-length') : null;
+      const size = cl ? (parseInt(cl, 10) || 0) : 0;
+      return Promise.resolve({
+        __isFileProxy: true,
+        __url: url,
+        __tabTitle: requestTabTitle,
+        __size: size,
+        __timestamp: requestStartTime,
+        status: 'success',
+        message: 'success',
+        result: {
+          data: [],
+          total: 0,
+          columns: [],
+          __fileProxyEmpty: true
+        }
+      });
+    }
+
     const origPromise = originalResponseJson.apply(this, arguments);
     return origPromise.then(function(data) {
       try {
@@ -472,11 +530,26 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
           }
           const approxRows = fastEstimateRowCount(data);
           const isBig = size > BIG_RESPONSE_THRESHOLD || approxRows > BIG_ROW_THRESHOLD;
+          const isHuge = size > HUGE_RESPONSE_THRESHOLD || approxRows > HUGE_ROW_THRESHOLD;
 
-          pushResponse(url, data, size, requestTabTitle, requestStartTime);
-
-          if (approxRows > RENDER_ROW_LIMIT) {
-            try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
+          if (isHuge) {
+            setTimeout(function() {
+              try {
+                pushResponse(url, data, size, requestTabTitle, requestStartTime);
+              } catch (_) {}
+            }, 50);
+          } else if (isBig) {
+            setTimeout(function() {
+              try {
+                pushResponse(url, data, size, requestTabTitle, requestStartTime);
+              } catch (_) {}
+              try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
+            }, 0);
+          } else {
+            pushResponse(url, data, size, requestTabTitle, requestStartTime);
+            if (approxRows > RENDER_ROW_LIMIT) {
+              try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
+            }
           }
         }
       } catch (_) {}
