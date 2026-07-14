@@ -140,8 +140,12 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       var title = document.title || '';
       // 尝试从常见Tab组件获取当前激活Tab标签文本
       var selectors = [
+        '.flow-tabs-item.k-active',
+        '.flow-tabs-item.active',
         '.k-tab.k-active',
         '.k-tab.active',
+        '.k-tabs-item.k-active',
+        '.k-tabs-item.active',
         '.ant-tabs-tab-active',
         '.el-tabs__item.is-active',
         '.ivu-tabs-tab-active',
@@ -175,7 +179,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       // 尝试查找带关闭按钮的Tab（常见于编辑器多Tab场景）
       var closeBtns = document.querySelectorAll('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, [class*="close"]');
       for (var j = 0; j < closeBtns.length; j++) {
-        var tabEl = closeBtns[j].closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
+        var tabEl = closeBtns[j].closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item, .flow-tabs-item, .k-tab, .k-tabs-item');
         if (tabEl) {
           var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
           if (tabText && tabText.length > 0 && tabText.length < 100) {
@@ -508,19 +512,54 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       });
     }
 
-    const origPromise = originalResponseJson.apply(this, arguments);
-    return origPromise.then(function(data) {
-      try {
+    // 对于需要捕获的 URL，不使用内置 .json() 解析（避免大数据解析时内存崩溃），
+    // 而是先读取文本判断大小，再手动解析和截断
+    if (shouldCaptureUrl(url) || isCaptchaUrl(url)) {
+      return resp.text().then(function(text) {
+        const size = text ? text.length : 0;
+
+        // 验证码URL直接解析
         if (isCaptchaUrl(url)) {
-          const code = extractCaptchaFromResponse(data);
-          if (code) window.__captchaCode = code;
-        }
-        if (shouldCaptureUrl(url) && data && typeof data === 'object') {
-          const cl = resp.headers && resp.headers.get ? resp.headers.get('content-length') : null;
-          const size = cl ? (parseInt(cl, 10) || 0) : 0;
-          if (size > 50 * 1024 * 1024) {
+          try {
+            const data = JSON.parse(text);
+            const code = extractCaptchaFromResponse(data);
+            if (code) window.__captchaCode = code;
             return data;
+          } catch (_) {
+            return {};
           }
+        }
+
+        // 大数据（超过阈值）：直接丢弃文本，不解析，通知主进程重新请求保存为文件
+        if (size > HUGE_RESPONSE_THRESHOLD) {
+          if (ipcRenderer) {
+            ipcRenderer.send('re-fetch-and-save', {
+              url: url,
+              method: 'GET',
+              pageTitle: requestTabTitle,
+              timestamp: requestStartTime
+            });
+          }
+          return {
+            __isFileProxy: true,
+            __url: url,
+            __tabTitle: requestTabTitle,
+            __size: size,
+            __timestamp: requestStartTime,
+            status: 'success',
+            message: 'success',
+            result: {
+              data: [],
+              total: 0,
+              columns: [],
+              __fileProxyEmpty: true
+            }
+          };
+        }
+
+        // 小数据：手动解析，截断后返回
+        try {
+          const data = JSON.parse(text);
           const approxRows = fastEstimateRowCount(data);
           const isBig = size > BIG_RESPONSE_THRESHOLD || approxRows > BIG_ROW_THRESHOLD;
           const isHuge = size > HUGE_RESPONSE_THRESHOLD || approxRows > HUGE_ROW_THRESHOLD;
@@ -544,8 +583,16 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
               try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
             }
           }
+          return data;
+        } catch (_) {
+          return {};
         }
-      } catch (_) {}
+      });
+    }
+
+    // 其他 URL 使用原始 .json()
+    const origPromise = originalResponseJson.apply(this, arguments);
+    return origPromise.then(function(data) {
       return data;
     });
   };

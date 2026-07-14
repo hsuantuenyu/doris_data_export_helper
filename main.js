@@ -36,6 +36,24 @@ if (!fs.existsSync(jsonCacheDir)) {
   fs.mkdirSync(jsonCacheDir, { recursive: true });
 }
 
+const settingsPath = path.join(dataDir, 'settings.json');
+let lastExportDir = '';
+try {
+  if (fs.existsSync(settingsPath)) {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    if (settings.lastExportDir && fs.existsSync(settings.lastExportDir)) {
+      lastExportDir = settings.lastExportDir;
+    }
+  }
+} catch (_) {}
+
+function saveLastExportDir(dir) {
+  try {
+    lastExportDir = dir;
+    fs.writeFileSync(settingsPath, JSON.stringify({ lastExportDir: dir }, null, 2), 'utf-8');
+  } catch (_) {}
+}
+
 function sanitizeFileName(name) {
   return (name || 'unknown').replace(/[\\/:*?"<>|]/g, '_').substring(0, 100);
 }
@@ -291,7 +309,27 @@ function pushMainCapture(entry) {
 }
 
 function getMainCaptures() {
-  return mainCapturedResponses;
+  // 返回轻量数据，避免 IPC 传输大数据对象导致渲染进程内存崩溃
+  return mainCapturedResponses.map((r, index) => {
+    const light = {
+      url: r.url,
+      timestamp: r.timestamp,
+      size: r.size,
+      rowCount: r.rowCount,
+      isBig: r.isBig,
+      isHuge: r.isHuge,
+      pageTitle: r.pageTitle,
+      headers: r.headers || [],
+      colCount: r.colCount || 0,
+      path: r.path || '',
+      _mainIndex: index  // 保留主进程数组中的原始索引，确保导出时能正确定位
+    };
+    // 只有小数据（<=5000行）才传递完整 data 到渲染进程
+    if (r.data && r.rowCount && r.rowCount <= 5000) {
+      light.data = r.data;
+    }
+    return light;
+  });
 }
 
 function clearMainCaptures() {
@@ -370,6 +408,15 @@ ipcMain.handle('list-credentials', () => {
 // webview preload 通过 IPC 发送捕获的 JSON 到主进程
 ipcMain.on('json-captured', (_event, entry) => {
   if (entry && entry.data && typeof entry.data === 'object') {
+    // 预先分析数据结构并缓存元数据，避免后续 IPC 传输大数据导致渲染进程崩溃
+    try {
+      const analysis = analyzeJsonStructure(entry.data);
+      if (analysis) {
+        entry.headers = analysis.headers;
+        entry.colCount = analysis.colCount;
+        entry.path = analysis.path;
+      }
+    } catch (_) {}
     pushMainCapture(entry);
   }
 });
@@ -587,7 +634,7 @@ ipcMain.handle('export-excel', async (_event, { sourceInfo, defaultFileName }) =
     if (!fname.toLowerCase().endsWith('.xlsx')) fname += '.xlsx';
     fname = fname.replace(/[\\/:*?"<>|]/g, '_');
 
-    let defaultDir = __dirname;
+    let defaultDir = lastExportDir || __dirname;
 
     const dialogResult = await dialog.showSaveDialog(mainWindow, {
       title: currentLang === 'zh' ? '保存 Excel 文件' : 'Save Excel File',
@@ -822,6 +869,7 @@ ipcMain.handle('export-excel', async (_event, { sourceInfo, defaultFileName }) =
       } catch (_) {}
     }
 
+    saveLastExportDir(path.dirname(finalPath));
     return { success: true, filePath: finalPath, warning };
   } catch (e) {
     return { success: false, message: e.message || String(e) };

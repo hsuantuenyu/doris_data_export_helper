@@ -1591,7 +1591,9 @@ async function scanAllSources(currentTabTitle) {
   const captureIndexMap = {};
   for (let i = 0; i < captures.length; i++) {
     const resp = captures[i];
-    if (!resp || !resp.data) continue;
+    if (!resp) continue;
+    // 允许轻量数据（data为null但有缓存的headers）
+    if (!resp.data && (!resp.headers || resp.headers.length === 0)) continue;
     if ((resp.timestamp || 0) <= now - expireMs) continue;
     if (currentTabTitle) {
       const pt = (resp.pageTitle || '').trim().toLowerCase();
@@ -1601,15 +1603,30 @@ async function scanAllSources(currentTabTitle) {
     const urlKey = resp.url || 'unknown';
     if (!urlMap[urlKey] || (resp.timestamp || 0) > (urlMap[urlKey].timestamp || 0)) {
       urlMap[urlKey] = resp;
-      captureIndexMap[urlKey] = i;
+      // 使用主进程数组中的原始索引，确保导出时正确定位
+      captureIndexMap[urlKey] = (typeof resp._mainIndex === 'number') ? resp._mainIndex : i;
     }
   }
   const uniqueResponses = Object.values(urlMap);
 
   for (const resp of uniqueResponses) {
-    if (!resp || !resp.data) continue;
+    if (!resp) continue;
     try {
-      const results = analyzeJsonLocal(resp.data, resp.url, resp.size, resp.timestamp);
+      let results;
+      if (resp.data) {
+        // 有完整数据时，本地分析
+        results = analyzeJsonLocal(resp.data, resp.url, resp.size, resp.timestamp);
+      } else if (resp.headers && resp.headers.length > 0) {
+        // 轻量数据：直接使用主进程缓存的元数据
+        results = [{
+          headers: resp.headers,
+          rowCount: resp.rowCount || 0,
+          colCount: resp.colCount || resp.headers.length,
+          path: resp.path || ''
+        }];
+      } else {
+        continue;
+      }
       if (results && results.length > 0) {
         for (const r of results) {
           if (r && r.headers && r.headers.length > 0 && r.rowCount > 0 && r.rowCount <= 200000) {
@@ -2044,19 +2061,18 @@ async function showExportModal() {
     });
   }
 
-  // 如果获取到了当前Tab页标题，只使用属于当前Tab页的数据
+  // 如果获取到了当前Tab页标题，优先使用属于当前Tab页的数据
   let filteredSources = capturedSources;
   if (currentTabTitle) {
     let currentTabSources = capturedSources.filter(s => s.isCurrentTab);
 
-    // 如果是已知Tab（从 getSearchDeatil 获取过配置），强制严格匹配当前Tab的JSON数据
+    // 如果是已知Tab（从 getSearchDeatil 获取过配置），优先使用匹配当前Tab的JSON数据
     if (isKnownTab) {
-      currentTabSources = currentTabSources.filter(s => s.type === 'json');
-      if (currentTabSources.length === 0) {
-        setStatus(tr('msgEmptyTable'), 'error');
-        return;
+      const matchedJson = currentTabSources.filter(s => s.type === 'json');
+      if (matchedJson.length > 0) {
+        filteredSources = matchedJson;
       }
-      filteredSources = currentTabSources;
+      // 匹配不到时不直接报错，降级到所有数据（避免Tab标题识别差异导致的漏匹配）
     } else if (currentTabSources.length > 0) {
       filteredSources = currentTabSources;
     }
@@ -2091,6 +2107,8 @@ async function showExportModal() {
       }
     }
     setStatus(tr('msgEmptyTable'), 'error');
+    const exportOverlay = document.getElementById('exportOverlay');
+    if (exportOverlay) exportOverlay.classList.remove('active');
     return;
   }
 
