@@ -44,6 +44,9 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     if (window.__tabResultMap && window.__tabResultMap[tabTitle]) {
       delete window.__tabResultMap[tabTitle];
     }
+    if (window.__tabConfigMap && window.__tabConfigMap[tabTitle]) {
+      delete window.__tabConfigMap[tabTitle];
+    }
   } catch (_) {}
 };
 
@@ -54,6 +57,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   const BIG_ROW_THRESHOLD = 10000;
   const HUGE_ROW_THRESHOLD = 15000;
   const RENDER_ROW_LIMIT = 5000;
+  const WEBVIEW_DATA_KEEP_LIMIT = 2000;
 
   function truncateDataForRender(data, limit) {
     if (!data || typeof data !== 'object') return;
@@ -288,7 +292,9 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         } catch (_) {}
       }
 
-      if (ipcRenderer && (isBig || isHuge)) {
+      // 发送到主进程后，webview 中只保留小数据的完整对象（用于快速预览）
+      // 超过 WEBVIEW_DATA_KEEP_LIMIT 行的数据全部置空，避免 webview 内存累积
+      if (rowCount > WEBVIEW_DATA_KEEP_LIMIT) {
         entry.data = null;
       }
 
@@ -614,25 +620,254 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         if (activeTab && window.__tabResultMap[activeTab]) {
           delete window.__tabResultMap[activeTab];
         }
+        // 立即释放 webview 中所有大数据的 data 引用，避免内存累积
+        // 但保留元数据和文件缓存引用，不清空主进程数据（避免新查询结果丢失）
+        try {
+          if (window.__capturedJsonResponses) {
+            for (let i = 0; i < window.__capturedJsonResponses.length; i++) {
+              const r = window.__capturedJsonResponses[i];
+              if (r && r.data) {
+                r.data = null;
+              }
+            }
+          }
+          if (window.__exportDataCache) {
+            window.__exportDataCache = {};
+          }
+        } catch (_) {}
         setTimeout(function() {
           try {
+            // 释放所有 data 引用，但保留完整元数据（包括 filePath 等），不替换数组
             if (window.__capturedJsonResponses && window.__capturedJsonResponses.length > 0) {
-              window.__capturedJsonResponses = [];
-              window.__exportDataCache = {};
+              for (let i = 0; i < window.__capturedJsonResponses.length; i++) {
+                const r = window.__capturedJsonResponses[i];
+                if (r && r.data) {
+                  r.data = null;
+                }
+              }
             }
-            // 同时通知主进程清空捕获数据，避免旧数据干扰
-            if (ipcRenderer) {
-              try {
-                ipcRenderer.invoke('clear-captured-json').catch(function(){});
-              } catch (_) {}
+            // 尝试触发 GC
+            if (window.gc && typeof window.gc === 'function') {
+              try { window.gc(); } catch (_) {}
             }
           } catch (_) {}
-        }, 500);
+        }, 100);
       }
     } catch (_) {}
   }
 
   document.addEventListener('click', clearOnQueryClick, true);
+
+  // 监听 Tab 关闭按钮点击，及时释放对应 Tab 的数据内存
+  function handleTabCloseClick(e) {
+    try {
+      const target = e.target;
+      if (!target || !target.closest) return;
+      // 匹配常见的关闭按钮（包括 CDC 平台的 deleteTabs-icon / guanbi）
+      const closeBtn = target.closest('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, .deleteTabs-icon, [class*="close"], [class*="guanbi"]');
+      if (!closeBtn) return;
+      // 找到所属的 Tab 元素
+      const tabEl = closeBtn.closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item, .flow-tabs-item, .k-tab, .k-tabs-item');
+      if (!tabEl) return;
+      // 获取 Tab 标题
+      let tabTitle = '';
+      const titleSpan = tabEl.querySelector('span[title]');
+      if (titleSpan) {
+        tabTitle = (titleSpan.getAttribute('title') || '').trim();
+      }
+      if (!tabTitle) {
+        tabTitle = (tabEl.textContent || tabEl.innerText || '').trim();
+      }
+      if (tabTitle && tabTitle.length > 0 && tabTitle.length < 100) {
+        // 清理 webview 中该 Tab 的数据
+        if (typeof window.__clearCapturedJsonByTab === 'function') {
+          window.__clearCapturedJsonByTab(tabTitle);
+        }
+        // 通知主进程也清理该 Tab 的数据
+        if (ipcRenderer) {
+          try {
+            ipcRenderer.send('clear-tab-json', tabTitle);
+          } catch (_) {}
+        }
+        // 尝试触发 GC（如果可用）
+        if (window.gc && typeof window.gc === 'function') {
+          try { window.gc(); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+  document.addEventListener('click', handleTabCloseClick, true);
+
+  // 监听右键菜单关闭 Tab 操作（关闭当前/其他/全部/右侧/左侧）
+  function handleContextMenuClose(e) {
+    try {
+      const target = e.target;
+      if (!target) return;
+      const text = (target.textContent || target.innerText || '').trim();
+      if (!text) return;
+
+      // 获取当前所有 Tab 标题
+      function getAllTabTitles() {
+        const titles = [];
+        const selectors = [
+          '.flow-tabs-item',
+          '.k-tab',
+          '.k-tabs-item',
+          '.ant-tabs-tab',
+          '.el-tabs__item',
+          '.ivu-tabs-tab',
+          '.tab-item',
+          '[role="tab"]',
+          '.tab',
+          '.tabs-item'
+        ];
+        for (let s = 0; s < selectors.length; s++) {
+          const tabs = document.querySelectorAll(selectors[s]);
+          if (tabs && tabs.length > 0) {
+            for (let t = 0; t < tabs.length; t++) {
+              const el = tabs[t];
+              let title = '';
+              const ts = el.querySelector('span[title]');
+              if (ts) title = (ts.getAttribute('title') || '').trim();
+              if (!title) title = (el.textContent || el.innerText || '').trim();
+              if (title && title.length > 0 && title.length < 100) {
+                titles.push(title);
+              }
+            }
+            if (titles.length > 0) break;
+          }
+        }
+        return titles;
+      }
+
+      // 获取当前激活 Tab 标题
+      function getActiveTitle() {
+        return getActiveTabTitle();
+      }
+
+      if (text === '关闭当前' || text === 'Close Current') {
+        const activeTitle = getActiveTitle();
+        if (activeTitle) {
+          if (typeof window.__clearCapturedJsonByTab === 'function') {
+            window.__clearCapturedJsonByTab(activeTitle);
+          }
+          if (ipcRenderer) {
+            try { ipcRenderer.send('clear-tab-json', activeTitle); } catch (_) {}
+          }
+        }
+      } else if (text === '关闭其他' || text === 'Close Others') {
+        const activeTitle = getActiveTitle();
+        const allTitles = getAllTabTitles();
+        for (let i = 0; i < allTitles.length; i++) {
+          if (allTitles[i] !== activeTitle) {
+            if (typeof window.__clearCapturedJsonByTab === 'function') {
+              window.__clearCapturedJsonByTab(allTitles[i]);
+            }
+            if (ipcRenderer) {
+              try { ipcRenderer.send('clear-tab-json', allTitles[i]); } catch (_) {}
+            }
+          }
+        }
+      } else if (text === '关闭全部' || text === 'Close All') {
+        const allTitles = getAllTabTitles();
+        for (let i = 0; i < allTitles.length; i++) {
+          if (typeof window.__clearCapturedJsonByTab === 'function') {
+            window.__clearCapturedJsonByTab(allTitles[i]);
+          }
+          if (ipcRenderer) {
+            try { ipcRenderer.send('clear-tab-json', allTitles[i]); } catch (_) {}
+          }
+        }
+        // 同时清空所有数据
+        try {
+          if (window.__capturedJsonResponses) {
+            for (let j = 0; j < window.__capturedJsonResponses.length; j++) {
+              if (window.__capturedJsonResponses[j]) window.__capturedJsonResponses[j].data = null;
+            }
+            window.__capturedJsonResponses = [];
+          }
+          if (window.__tabResultMap) window.__tabResultMap = {};
+          if (window.__tabConfigMap) window.__tabConfigMap = {};
+        } catch (_) {}
+        if (ipcRenderer) {
+          try { ipcRenderer.invoke('clear-captured-json').catch(function(){}); } catch (_) {}
+        }
+      } else if (text === '关闭右侧' || text === 'Close Right') {
+        const allTitles = getAllTabTitles();
+        const activeTitle = getActiveTitle();
+        let foundActive = false;
+        for (let i = 0; i < allTitles.length; i++) {
+          if (allTitles[i] === activeTitle) {
+            foundActive = true;
+            continue;
+          }
+          if (foundActive) {
+            if (typeof window.__clearCapturedJsonByTab === 'function') {
+              window.__clearCapturedJsonByTab(allTitles[i]);
+            }
+            if (ipcRenderer) {
+              try { ipcRenderer.send('clear-tab-json', allTitles[i]); } catch (_) {}
+            }
+          }
+        }
+      } else if (text === '关闭左侧' || text === 'Close Left') {
+        const allTitles = getAllTabTitles();
+        const activeTitle = getActiveTitle();
+        for (let i = 0; i < allTitles.length; i++) {
+          if (allTitles[i] === activeTitle) break;
+          if (typeof window.__clearCapturedJsonByTab === 'function') {
+            window.__clearCapturedJsonByTab(allTitles[i]);
+          }
+          if (ipcRenderer) {
+            try { ipcRenderer.send('clear-tab-json', allTitles[i]); } catch (_) {}
+          }
+        }
+      } else {
+        return; // 不是关闭菜单项
+      }
+      // 尝试触发 GC
+      if (window.gc && typeof window.gc === 'function') {
+        try { window.gc(); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+  document.addEventListener('click', handleContextMenuClose, true);
+
+  // 定期清理过期数据，释放内存
+  setInterval(function() {
+    try {
+      if (!window.__capturedJsonResponses || window.__capturedJsonResponses.length === 0) return;
+      const now = Date.now();
+      const expireMs = window.__expireMs || (10 * 60 * 1000);
+      let removed = 0;
+      for (let i = window.__capturedJsonResponses.length - 1; i >= 0; i--) {
+        const r = window.__capturedJsonResponses[i];
+        if (!r || (r.timestamp || 0) <= now - expireMs) {
+          if (r && r.data) r.data = null;
+          window.__capturedJsonResponses.splice(i, 1);
+          removed++;
+        }
+      }
+      // 如果数据条目仍然很多，强制释放大数据的 data 引用
+      if (window.__capturedJsonResponses.length > 3) {
+        let totalSize = 0;
+        for (let j = 0; j < window.__capturedJsonResponses.length; j++) {
+          totalSize += window.__capturedJsonResponses[j].size || 0;
+        }
+        // 总大小超过 10MB 时，释放所有 data 引用（主进程和文件缓存中已有备份）
+        if (totalSize > 10 * 1024 * 1024) {
+          for (let k = 0; k < window.__capturedJsonResponses.length; k++) {
+            if (window.__capturedJsonResponses[k].data) {
+              window.__capturedJsonResponses[k].data = null;
+            }
+          }
+        }
+      }
+      if (removed > 0 && window.gc && typeof window.gc === 'function') {
+        try { window.gc(); } catch (_) {}
+      }
+    } catch (_) {}
+  }, 30 * 1000);
 
   function installCaptchaIntercept(win) {
     if (!win || win.__captchaInterceptInstalled) return;

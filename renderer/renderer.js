@@ -1488,7 +1488,11 @@ async function scanAllSourcesFromWebview(currentTabTitle) {
           return pt === ct || pt.indexOf(ct) >= 0 || ct.indexOf(pt) >= 0;
         });
       }
-      
+      // 如果按Tab过滤后没有数据，回退到使用所有数据
+      if (filterTabTitle && recentResponses.length === 0) {
+        recentResponses = jsonResps.filter(r => (r.timestamp || 0) > now - expireMs);
+      }
+
       // 按URL去重：同一URL只保留最新的一个
       const urlMap = {};
         for (let i = 0; i < recentResponses.length; i++) {
@@ -1587,8 +1591,8 @@ async function scanAllSources(currentTabTitle) {
   const expireMs = getExpireMs();
 
   // 处理内存中的数据
-  const urlMap = {};
-  const captureIndexMap = {};
+  let urlMap = {};
+  let captureIndexMap = {};
   for (let i = 0; i < captures.length; i++) {
     const resp = captures[i];
     if (!resp) continue;
@@ -1605,6 +1609,20 @@ async function scanAllSources(currentTabTitle) {
       urlMap[urlKey] = resp;
       // 使用主进程数组中的原始索引，确保导出时正确定位
       captureIndexMap[urlKey] = (typeof resp._mainIndex === 'number') ? resp._mainIndex : i;
+    }
+  }
+  // 如果按当前Tab过滤后没有数据，回退到使用所有数据（避免Tab标题识别差异导致漏数据）
+  if (currentTabTitle && Object.keys(urlMap).length === 0) {
+    for (let i = 0; i < captures.length; i++) {
+      const resp = captures[i];
+      if (!resp) continue;
+      if (!resp.data && (!resp.headers || resp.headers.length === 0)) continue;
+      if ((resp.timestamp || 0) <= now - expireMs) continue;
+      const urlKey = resp.url || 'unknown';
+      if (!urlMap[urlKey] || (resp.timestamp || 0) > (urlMap[urlKey].timestamp || 0)) {
+        urlMap[urlKey] = resp;
+        captureIndexMap[urlKey] = (typeof resp._mainIndex === 'number') ? resp._mainIndex : i;
+      }
     }
   }
   const uniqueResponses = Object.values(urlMap);
@@ -1651,6 +1669,7 @@ async function scanAllSources(currentTabTitle) {
   }
 
   // 处理文件缓存的数据（分析结果已在保存时缓存，无需重新解析）
+  let fileMatchedCount = 0;
   for (let i = 0; i < fileCaptures.length; i++) {
     const finfo = fileCaptures[i];
     if (!finfo || !finfo.filePath) continue;
@@ -1676,9 +1695,38 @@ async function scanAllSources(currentTabTitle) {
           pageTitle: finfo.tabName || '',
           isFileSource: true
         });
+        fileMatchedCount++;
       }
     } catch (e) {
       console.log('[scanAllSources] file cache error:', e);
+    }
+  }
+  // 如果按Tab过滤后内存数据和文件缓存都没有匹配到，回退到所有文件缓存
+  if (currentTabTitle && sources.length === 0) {
+    for (let i = 0; i < fileCaptures.length; i++) {
+      const finfo = fileCaptures[i];
+      if (!finfo || !finfo.filePath) continue;
+      if ((finfo.timestamp || 0) <= now - expireMs) continue;
+      try {
+        if (finfo.rowCount > 0 && finfo.headers && finfo.headers.length > 0) {
+          sources.push({
+            id: 'json_file_' + nextId++,
+            type: 'json',
+            source: finfo.url || '',
+            headers: finfo.headers,
+            rows: [],
+            rowCount: finfo.rowCount,
+            colCount: finfo.colCount || 0,
+            timestamp: finfo.timestamp,
+            jsonFilePath: finfo.filePath,
+            path: finfo.path || '',
+            pageTitle: finfo.tabName || '',
+            isFileSource: true
+          });
+        }
+      } catch (e) {
+        console.log('[scanAllSources] file cache fallback error:', e);
+      }
     }
   }
 
@@ -1988,27 +2036,83 @@ async function showExportModal() {
   // 1. 扫描所有数据源（按当前Tab页过滤）
   capturedSources = await scanAllSources(currentTabTitle);
 
-  // 诊断：如果未找到 JSON 数据源，检查 webview 中的捕获状态并尝试回退提取
+  // 诊断：如果未找到 JSON 数据源，尝试多种回退方案
   if (!capturedSources.some(s => s.type === 'json')) {
+    console.log('[Export] No JSON sources found, trying fallback...');
     try {
-      const diag = await webview.executeJavaScript(`(function(){
-        const resps = window.__capturedJsonResponses || [];
-        return {
-          hasCaptureInstalled: !!window.__jsonCaptureInstalled,
-          respCount: resps.length,
-          urls: resps.slice(0, 5).map(r => r.url),
-          rowCounts: resps.slice(0, 5).map(r => r.rowCount || 0)
-        };
-      })()`);
-      console.log('JSON capture diag:', diag);
-      if (diag && diag.respCount > 0) {
-        setStatus('已捕获 ' + diag.respCount + ' 个JSON响应，尝试回退提取...', 'error');
-        const fallbackSources = await scanAllSources(currentTabTitle);
-        if (fallbackSources.length > 0) {
-          capturedSources = fallbackSources;
+      // 回退1：直接从主进程获取所有数据（不过滤Tab）
+      const rawResult = await window.electronAPI.getCapturedJson();
+      if (rawResult && rawResult.success && rawResult.captures && rawResult.captures.length > 0) {
+        const allSources = [];
+        for (const resp of rawResult.captures) {
+          if (!resp) continue;
+          if (resp.data) {
+            const results = analyzeJsonLocal(resp.data, resp.url, resp.size, resp.timestamp);
+            if (results && results.length > 0) {
+              for (const r of results) {
+                if (r && r.headers && r.headers.length > 0 && r.rowCount > 0) {
+                  allSources.push({
+                    id: 'fallback_json_' + Math.random().toString(36).substr(2, 9),
+                    type: 'json',
+                    source: resp.url || '',
+                    headers: r.headers,
+                    rows: r.rows || [],
+                    rowCount: r.rowCount,
+                    colCount: r.headers.length,
+                    timestamp: resp.timestamp,
+                    pageTitle: resp.pageTitle || '',
+                    isCurrentTab: false
+                  });
+                }
+              }
+            }
+          } else if (resp.headers && resp.headers.length > 0 && (resp.rowCount || 0) > 0) {
+            allSources.push({
+              id: 'fallback_json_' + Math.random().toString(36).substr(2, 9),
+              type: 'json',
+              source: resp.url || '',
+              headers: resp.headers,
+              rows: [],
+              rowCount: resp.rowCount,
+              colCount: resp.headers.length,
+              timestamp: resp.timestamp,
+              pageTitle: resp.pageTitle || '',
+              isCurrentTab: false
+            });
+          }
+        }
+        if (allSources.length > 0) {
+          capturedSources = allSources;
+          console.log('[Export] Fallback sources:', allSources.length);
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      console.log('[Export] Fallback error:', e);
+    }
+
+    // 回退2：检查 webview 中的捕获状态
+    if (!capturedSources.some(s => s.type === 'json')) {
+      try {
+        const diag = await webview.executeJavaScript(`(function(){
+          const resps = window.__capturedJsonResponses || [];
+          return {
+            hasCaptureInstalled: !!window.__jsonCaptureInstalled,
+            respCount: resps.length,
+            urls: resps.slice(0, 5).map(r => r.url),
+            rowCounts: resps.slice(0, 5).map(r => r.rowCount || 0),
+            dataExists: resps.slice(0, 5).map(r => !!r.data)
+          };
+        })()`);
+        console.log('JSON capture diag:', diag);
+        if (diag && diag.respCount > 0) {
+          setStatus('已捕获 ' + diag.respCount + ' 个JSON响应，尝试回退提取...', 'error');
+          const fallbackSources = await scanAllSourcesFromWebview();
+          if (fallbackSources.length > 0) {
+            capturedSources = fallbackSources;
+          }
+        }
+      } catch (_) {}
+    }
   }
 
   const jsonSources = capturedSources.filter(s => s.type === 'json');
@@ -2441,21 +2545,20 @@ async function doExport(source) {
           .replace('{row}', source.rowCount).replace('{col}', source.colCount),
         source.type === 'html');
 
-      // 导出完成后释放内存：清理当前Tab的数据
+      // 导出完成后释放内存：只清理 webview 中当前Tab的数据，保留主进程数据供再次导出
       try {
-        const currentTabTitle = getActiveTabTitle();
+        const currentTabTitle = await webview.executeJavaScript(`(function() { return typeof window.__getActiveTabTitle === 'function' ? window.__getActiveTabTitle() : ''; })()`);
         if (currentTabTitle) {
-          if (window.electronAPI && window.electronAPI.clearCapturedJson) {
-            window.electronAPI.clearCapturedJson();
-          }
           try {
-            webview.executeJavaScript(`
-              if (window.__capturedJsonResponses) {
-                window.__capturedJsonResponses = [];
-              }
-              if (window.__tabResultMap) {
-                delete window.__tabResultMap['${currentTabTitle.replace(/'/g, "\\'")}'];
-              }
+            await webview.executeJavaScript(`
+              (function() {
+                if (typeof window.__clearCapturedJsonByTab === 'function') {
+                  window.__clearCapturedJsonByTab('${currentTabTitle.replace(/'/g, "\\'")}');
+                }
+                if (window.__exportDataCache) {
+                  window.__exportDataCache = {};
+                }
+              })()
             `);
           } catch (_) {}
         }

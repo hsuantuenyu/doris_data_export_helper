@@ -64,10 +64,23 @@ function analyzeJsonStructure(data) {
       'tableData', 'payload', 'content', 'listData', 'dataList',
       'queryResult', 'query_data', 'searchResult', 'RECORDS'];
 
+    function isValidObject(item) {
+      return item && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).length > 0;
+    }
+
     function findArray(obj, depth, currentPath) {
       if (depth > 5 || !obj || typeof obj !== 'object') return null;
-      if (Array.isArray(obj) && obj.length > 0 && obj[0] && typeof obj[0] === 'object') {
-        return { array: obj, path: currentPath };
+      if (Array.isArray(obj) && obj.length > 0) {
+        // 跳过 null/undefined 元素，找到第一个有效对象
+        const firstValid = obj.find(isValidObject);
+        if (firstValid) {
+          return { array: obj, path: currentPath, firstItem: firstValid };
+        }
+        // 如果数组元素是基本类型或空对象，继续递归检查元素内部
+        for (let i = 0; i < Math.min(obj.length, 3); i++) {
+          const found = findArray(obj[i], depth + 1, currentPath + (currentPath ? '.' : '') + i);
+          if (found) return found;
+        }
       }
       for (let i = 0; i < DATA_KEYS.length; i++) {
         const val = obj[DATA_KEYS[i]];
@@ -84,18 +97,22 @@ function analyzeJsonStructure(data) {
     }
 
     let result = null;
-    if (Array.isArray(data) && data.length > 0 && data[0] && typeof data[0] === 'object') {
-      result = { array: data, path: '' };
+    if (Array.isArray(data) && data.length > 0) {
+      const firstValid = data.find(isValidObject);
+      if (firstValid) {
+        result = { array: data, path: '', firstItem: firstValid };
+      } else {
+        result = findArray(data, 0, '');
+      }
     } else {
       result = findArray(data, 0, '');
     }
 
-    if (result && result.array && result.array.length > 0) {
-      const firstItem = result.array[0];
+    if (result && result.array && result.array.length > 0 && result.firstItem) {
       return {
-        headers: Object.keys(firstItem),
+        headers: Object.keys(result.firstItem),
         rowCount: result.array.length,
-        colCount: Object.keys(firstItem).length,
+        colCount: Object.keys(result.firstItem).length,
         path: result.path
       };
     }
@@ -269,12 +286,17 @@ let credentials = loadCredentials();
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400, height: 900,
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true
     }
+  });
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.maximize();
+    mainWindow.show();
   });
   mainWindow.on('closed', () => { mainWindow = null; });
   mainWindow.webContents.on('did-finish-load', () => {
@@ -301,9 +323,31 @@ function pushMainCapture(entry) {
       mainCapturedResponses[existingIndex] = entry;
       return;
     }
+    // 大数据（>2MB 或标记为 isHuge）立即释放 data 引用，只保留元数据
+    // 文件缓存机制已确保大数据保存到磁盘，无需在内存中保留完整对象
+    if (entry.isHuge || (entry.size || 0) > 2 * 1024 * 1024) {
+      entry.data = null;
+    }
     mainCapturedResponses.push(entry);
     if (mainCapturedResponses.length > MAX_MAIN_CAPTURES) {
-      mainCapturedResponses.splice(0, mainCapturedResponses.length - MAX_MAIN_CAPTURES);
+      const removed = mainCapturedResponses.splice(0, mainCapturedResponses.length - MAX_MAIN_CAPTURES);
+      for (let i = 0; i < removed.length; i++) {
+        if (removed[i] && removed[i].data) {
+          removed[i].data = null;
+        }
+      }
+    }
+    // 如果总数据量超过 50MB，释放所有条目的 data 引用
+    let totalSize = 0;
+    for (let i = 0; i < mainCapturedResponses.length; i++) {
+      totalSize += mainCapturedResponses[i].size || 0;
+    }
+    if (totalSize > 50 * 1024 * 1024) {
+      for (let i = 0; i < mainCapturedResponses.length; i++) {
+        if (mainCapturedResponses[i] && mainCapturedResponses[i].data) {
+          mainCapturedResponses[i].data = null;
+        }
+      }
     }
   } catch (_) {}
 }
@@ -334,6 +378,22 @@ function getMainCaptures() {
 
 function clearMainCaptures() {
   mainCapturedResponses = [];
+}
+
+function clearMainCapturesByTab(tabTitle) {
+  if (!tabTitle) return 0;
+  const lowerTitle = String(tabTitle).toLowerCase();
+  let removed = 0;
+  for (let i = mainCapturedResponses.length - 1; i >= 0; i--) {
+    const r = mainCapturedResponses[i];
+    const pt = (r && r.pageTitle) ? String(r.pageTitle).toLowerCase() : '';
+    if (pt === lowerTitle || pt.indexOf(lowerTitle) >= 0 || lowerTitle.indexOf(pt) >= 0) {
+      if (r && r.data) r.data = null;
+      mainCapturedResponses.splice(i, 1);
+      removed++;
+    }
+  }
+  return removed;
 }
 
 // 根据 path 从 JSON 对象中提取数组
@@ -431,6 +491,11 @@ ipcMain.handle('clear-captured-json', () => {
   clearMainCaptures();
   clearJsonFileCache();
   return { success: true };
+});
+
+// webview 关闭 Tab 时，清理对应 Tab 的数据
+ipcMain.on('clear-tab-json', (_event, tabTitle) => {
+  clearMainCapturesByTab(tabTitle);
 });
 
 // webview 发送大数据到主进程保存为文件（避免 webview 内存溢出）
@@ -545,15 +610,17 @@ ipcMain.on('re-fetch-and-save', (_event, payload) => {
       };
 
       const req = http.request(options, (res) => {
-        let rawData = '';
-        res.on('data', (chunk) => {
-          rawData += chunk;
-        });
-        res.on('end', () => {
+        // 使用流式写入，避免大响应字符串累积导致主进程内存暴涨
+        const fileStream = fs.createWriteStream(filePath);
+        res.pipe(fileStream);
+        fileStream.on('finish', () => {
+          fileStream.close();
           try {
-            fs.writeFileSync(filePath, rawData, 'utf-8');
+            const stats = fs.statSync(filePath);
             let analysis = null;
             try {
+              // 大文件分析时也可能占用较多内存，但主进程有 4GB 限制，通常可接受
+              const rawData = fs.readFileSync(filePath, 'utf-8');
               const data = JSON.parse(rawData);
               analysis = analyzeJsonStructure(data);
             } catch (e) {}
@@ -561,7 +628,7 @@ ipcMain.on('re-fetch-and-save', (_event, payload) => {
               filePath, fileName,
               tabName: payload.pageTitle || '',
               url: url,
-              timestamp, size: rawData.length,
+              timestamp, size: stats.size,
               rowCount: analysis ? analysis.rowCount : 0,
               headers: analysis ? analysis.headers : [],
               colCount: analysis ? analysis.colCount : 0,
@@ -571,6 +638,9 @@ ipcMain.on('re-fetch-and-save', (_event, payload) => {
           } catch (e) {
             console.error('[re-fetch-and-save] save error:', e);
           }
+        });
+        fileStream.on('error', (err) => {
+          console.error('[re-fetch-and-save] file stream error:', err);
         });
       });
 
@@ -716,6 +786,9 @@ ipcMain.handle('export-excel', async (_event, { sourceInfo, defaultFileName }) =
       }
     } else if (typeof sourceInfo.mainCaptureIndex === 'number' && mainCapturedResponses[sourceInfo.mainCaptureIndex]) {
       const capture = mainCapturedResponses[sourceInfo.mainCaptureIndex];
+      if (!capture.data) {
+        return { success: false, message: currentLang === 'zh' ? '数据已从内存释放，请重新查询后再导出' : 'Data released from memory, please re-query before exporting' };
+      }
       const arr = getArrayByPath(capture.data, sourceInfo.path);
       if (Array.isArray(arr)) {
         const BATCH_SIZE = 5000;
@@ -903,3 +976,49 @@ ipcMain.handle('ocr-captcha', async (_event, base64Image) => {
 app.on('ready', () => { buildMenu(); createWindow(); });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (!mainWindow) { buildMenu(); createWindow(); } });
+
+// 定期清理过期数据，避免主进程内存无限增长
+setInterval(() => {
+  try {
+    const now = Date.now();
+    // 1. 清理主进程内存中过期的捕获（30分钟过期）
+    let removedCaptures = 0;
+    for (let i = mainCapturedResponses.length - 1; i >= 0; i--) {
+      const r = mainCapturedResponses[i];
+      if (!r || (r.timestamp || 0) <= now - 30 * 60 * 1000) {
+        if (r && r.data) r.data = null;
+        mainCapturedResponses.splice(i, 1);
+        removedCaptures++;
+      }
+    }
+    // 2. 当总数据量超过 30MB 时，释放剩余条目的 data 引用（保留元数据）
+    let totalSize = 0;
+    for (let i = 0; i < mainCapturedResponses.length; i++) {
+      totalSize += mainCapturedResponses[i].size || 0;
+    }
+    if (totalSize > 30 * 1024 * 1024) {
+      for (let i = 0; i < mainCapturedResponses.length; i++) {
+        if (mainCapturedResponses[i] && mainCapturedResponses[i].data) {
+          mainCapturedResponses[i].data = null;
+        }
+      }
+    }
+    // 3. 清理过期的文件缓存（60分钟过期）
+    let removedFiles = 0;
+    for (let i = jsonFileCacheList.length - 1; i >= 0; i--) {
+      const f = jsonFileCacheList[i];
+      if (!f || (f.timestamp || 0) <= now - 60 * 60 * 1000) {
+        try {
+          if (f && f.filePath && fs.existsSync(f.filePath)) {
+            fs.unlinkSync(f.filePath);
+          }
+        } catch (_) {}
+        jsonFileCacheList.splice(i, 1);
+        removedFiles++;
+      }
+    }
+    if (removedCaptures > 0 || removedFiles > 0) {
+      console.log('[cleanup] removed', removedCaptures, 'captures,', removedFiles, 'files');
+    }
+  } catch (_) {}
+}, 60 * 1000); // 每分钟检查一次
