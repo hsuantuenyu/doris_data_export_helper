@@ -79,6 +79,78 @@
     .toolbar .filename-clear:hover {
       background: #999;
     }
+    .toolbar .filename-dropdown-btn {
+      position: absolute;
+      right: 28px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 20px;
+      height: 20px;
+      border: none;
+      background: transparent;
+      color: #888;
+      font-size: 10px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2;
+    }
+    .toolbar .filename-dropdown-btn:hover {
+      color: #333;
+    }
+    .toolbar .filename-dropdown-panel {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      min-width: 260px;
+      max-height: 320px;
+      overflow-y: auto;
+      background: #fff;
+      border: 1px solid #d9d9d9;
+      border-radius: 4px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      z-index: 9999;
+      display: none;
+      margin-top: 2px;
+    }
+    .toolbar .filename-dropdown-panel.active {
+      display: block;
+    }
+    .toolbar .filename-dropdown-group {
+      padding: 4px 0;
+    }
+    .toolbar .filename-dropdown-group-label {
+      padding: 4px 12px;
+      font-size: 11px;
+      color: #888;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .toolbar .filename-dropdown-option {
+      padding: 6px 12px 6px 20px;
+      font-size: 13px;
+      color: #333;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .toolbar .filename-dropdown-option:hover {
+      background: #e8f0fe;
+      color: #1a73e8;
+    }
+    .toolbar .filename-dropdown-option .opt-en {
+      font-size: 11px;
+      color: #999;
+      margin-left: 6px;
+    }
+    .toolbar .filename-dropdown-option:hover .opt-en {
+      color: #1a73e8;
+    }
     .toolbar select {
       height: 32px;
       border: 1px solid #d9d9d9;
@@ -470,31 +542,34 @@
     <span id="jsonModeIndicator" style="display:none;font-size:11px;background:#4285f4;color:#fff;padding:2px 8px;border-radius:10px;white-space:nowrap;">JSON模式</span>
     </span>
     <label data-i18n="labelFilename">文件名:</label>
-    <div class="filename-wrapper">
-      <input class="filename-input" type="text" id="filenameInput" data-i18n-placeholder="phFilename" placeholder="自定义文件名（不含扩展名）" list="filenameList" />
+    <div class="filename-wrapper" id="filenameWrapper">
+      <input class="filename-input" type="text" id="filenameInput" data-i18n-placeholder="phFilename" placeholder="自定义文件名（不含扩展名）" autocomplete="off" />
+      <button class="filename-dropdown-btn" id="btnFilenameDropdown" title="选择预设文件名" type="button">▼</button>
       <button class="filename-clear" id="btnFilenameClear" title="清空文件名" style="display:none;">✕</button>
+      <div class="filename-dropdown-panel" id="filenameDropdownPanel">
+        <div class="filename-dropdown-group">
+          <div class="filename-dropdown-group-label">前置软件</div>
+          <div class="filename-dropdown-option" data-value="qzrj_realtime_detail">表实时性查询结果统计<span class="opt-en">(qzrj_realtime_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="qzrj_dict_detail">值域一致性查询结果<span class="opt-en">(qzrj_dict_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="qzrj_chief_detail">主诉、现病史明细查询结果<span class="opt-en">(qzrj_chief_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="qzrj_column_update_detail">字段完整性修订部分查询结果<span class="opt-en">(qzrj_column_update_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="qzrj_column_level_1_detail">必填字段查询结果<span class="opt-en">(qzrj_column_level_1_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="qzrj_column_level_2_detail">重要字段建议填查询结果<span class="opt-en">(qzrj_column_level_2_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="qzrj_association_detail">数据关联一致性查询结果<span class="opt-en">(qzrj_association_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="qzrj_column_level_3_detail">重要字段建议填查询结果<span class="opt-en">(qzrj_column_level_3_detail)</span></div>
+        </div>
+        <div class="filename-dropdown-group">
+          <div class="filename-dropdown-group-label">省标41张表</div>
+          <div class="filename-dropdown-option" data-value="prov_timeliness_detail">省标表时效性统计<span class="opt-en">(prov_timeliness_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="prov_association_detail">省标表关联关系统计<span class="opt-en">(prov_association_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="prov_chief_detail">省标表主诉、现病史统计<span class="opt-en">(prov_chief_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="prov_column_level_1_detail">省标必填字段统计<span class="opt-en">(prov_column_level_1_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="prov_column_level_2_detail">省标重要建议填字段统计<span class="opt-en">(prov_column_level_2_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="prov_column_level_3_detail">省标条件必填字段统计<span class="opt-en">(prov_column_level_3_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="prov_column_level_update_detail">省标必填、条件必填字段完整性统计_更新部分<span class="opt-en">(prov_column_level_update_detail)</span></div>
+        </div>
+      </div>
     </div>
-    <datalist id="filenameList">
-      <optgroup label="前置软件">
-        <option value="qzrj_realtime_detail">表实时性查询结果统计</option>
-        <option value="qzrj_dict_detail">值域一致性查询结果</option>
-        <option value="qzrj_chief_detail">主诉、现病史明细查询结果</option>
-        <option value="qzrj_column_update_detail">字段完整性修订部分查询结果</option>
-        <option value="qzrj_column_level_1_detail">必填字段查询结果</option>
-        <option value="qzrj_column_level_2_detail">重要字段建议填查询结果</option>
-        <option value="qzrj_association_detail">数据关联一致性查询结果</option>
-        <option value="qzrj_column_level_3_detail">重要字段建议填查询结果</option>
-      </optgroup>
-      <optgroup label="省标41张表">
-        <option value="prov_timeliness_detail">省标表时效性统计</option>
-        <option value="prov_association_detail">省标表关联关系统计</option>
-        <option value="prov_chief_detail">省标表主诉、现病史统计</option>
-        <option value="prov_column_level_1_detail">省标必填字段统计</option>
-        <option value="prov_column_level_2_detail">省标重要建议填字段统计</option>
-        <option value="prov_column_level_3_detail">省标条件必填字段统计</option>
-        <option value="prov_column_level_update_detail">省标必填、条件必填字段完整性统计_更新部分</option>
-      </optgroup>
-    </datalist>
     <button class="btn-export" id="btnExport" data-i18n="btnExport">导出 Excel</button>
     <span class="status" id="statusText" data-i18n="statusReady">就绪</span>
   </div>

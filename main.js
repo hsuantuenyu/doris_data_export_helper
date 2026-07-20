@@ -704,7 +704,23 @@ ipcMain.handle('export-excel', async (_event, { sourceInfo, defaultFileName }) =
     if (!fname.toLowerCase().endsWith('.xlsx')) fname += '.xlsx';
     fname = fname.replace(/[\\/:*?"<>|]/g, '_');
 
-    let defaultDir = lastExportDir || __dirname;
+    // 默认目录：优先使用上次导出目录，其次是用户下载目录，最后回退到桌面/主目录
+    let defaultDir = lastExportDir;
+    if (!defaultDir) {
+      try {
+        defaultDir = app.getPath('downloads');
+      } catch (_) {
+        try {
+          defaultDir = app.getPath('desktop');
+        } catch (_) {
+          try {
+            defaultDir = app.getPath('home');
+          } catch (_) {
+            defaultDir = __dirname;
+          }
+        }
+      }
+    }
 
     const dialogResult = await dialog.showSaveDialog(mainWindow, {
       title: currentLang === 'zh' ? '保存 Excel 文件' : 'Save Excel File',

@@ -160,6 +160,9 @@ const webview = document.getElementById('webview');
 const urlInput = document.getElementById('urlInput');
 const selectorInput = document.getElementById('selectorInput');
 const filenameInput = document.getElementById('filenameInput');
+const btnFilenameDropdown = document.getElementById('btnFilenameDropdown');
+const filenameDropdownPanel = document.getElementById('filenameDropdownPanel');
+const filenameWrapper = document.getElementById('filenameWrapper');
 const expireMinutesInput = document.getElementById('expireMinutesInput');
 const rememberCheck = document.getElementById('rememberCheck');
 const statusText = document.getElementById('statusText');
@@ -310,6 +313,50 @@ if (btnFilenameClear) {
     try { window.electronAPI.saveUserInput({ filename: '' }); } catch (_) {}
   });
 }
+
+// 自定义文件名下拉面板（替代原生 datalist，解决 Electron 打包后不显示问题）
+function toggleFilenameDropdown() {
+  if (!filenameDropdownPanel) return;
+  const isActive = filenameDropdownPanel.classList.contains('active');
+  if (isActive) {
+    filenameDropdownPanel.classList.remove('active');
+  } else {
+    filenameDropdownPanel.classList.add('active');
+  }
+}
+function closeFilenameDropdown() {
+  if (filenameDropdownPanel) {
+    filenameDropdownPanel.classList.remove('active');
+  }
+}
+if (btnFilenameDropdown) {
+  btnFilenameDropdown.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFilenameDropdown();
+  });
+}
+if (filenameDropdownPanel) {
+  filenameDropdownPanel.addEventListener('click', (e) => {
+    const option = e.target.closest('.filename-dropdown-option');
+    if (option) {
+      const value = option.getAttribute('data-value') || '';
+      if (value && filenameInput) {
+        filenameInput.value = value;
+        updateFilenameClearBtn();
+        try { window.electronAPI.saveUserInput({ filename: value }); } catch (_) {}
+      }
+      closeFilenameDropdown();
+    }
+    e.stopPropagation();
+  });
+}
+document.addEventListener('click', (e) => {
+  if (filenameDropdownPanel && filenameDropdownPanel.classList.contains('active')) {
+    if (!filenameWrapper || !filenameWrapper.contains(e.target)) {
+      closeFilenameDropdown();
+    }
+  }
+});
 // 初始化时检查
 updateFilenameClearBtn();
 

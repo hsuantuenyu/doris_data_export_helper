@@ -324,10 +324,28 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     } catch(e) {}
   }
 
+  // 需要隐藏（不捕获）的 API 列表
+  var IGNORE_API_PATTERNS = [
+    /\/i\/md-query\/ds\/sourceList\/simply/i,
+    /\/i\/md-query\/ds\/sourceTypeList/i,
+    /\/i\/dds\/package\/resourceList/i,
+    /\/i\/dds\/flow\/getLevelList/i,
+    /\/i\/dds\/udf\/getFunctions/i,
+    /\/i\/dts-web\/dict\/getDtsTaskParam/i,
+    /\/i\/dds\/flow\/getBatchTree/i,
+    /\/i\/dds\/template\/getTaskTemplateTree/i,
+    /\/i\/dds\/tempSearch\/getTempSearchTree/i,
+    /\/i\/dds\/recycle\/getRecycleTree/i,
+    /\/i\/md-query\/query\/db\/list\/min\/granted/i
+  ];
+
   function shouldCaptureUrl(url) {
     if (typeof url !== 'string') return false;
     if (/\.(js|css|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|ico|map)(\?|$)/i.test(url)) return false;
     if (/\/ds-standard-query\/cacheData\//i.test(url)) return false;
+    for (var i = 0; i < IGNORE_API_PATTERNS.length; i++) {
+      if (IGNORE_API_PATTERNS[i].test(url)) return false;
+    }
     return true;
   }
 
