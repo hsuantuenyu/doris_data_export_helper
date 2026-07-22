@@ -417,31 +417,16 @@ webview.addEventListener('console-message', (e) => {
 // 监听 webview 渲染进程崩溃，大数据场景下常见
 webview.addEventListener('crashed', (e) => {
   console.error('[webview] renderer process crashed:', e);
-  // 检查主进程是否保留了数据（内存 + 文件缓存），如果有则提示用户仍可导出
-  try {
-    if (window.electronAPI && window.electronAPI.getCapturedJson && window.electronAPI.getJsonFileList) {
-      Promise.all([
-        window.electronAPI.getCapturedJson(),
-        window.electronAPI.getJsonFileList()
-      ]).then(([memResult, fileResult]) => {
-        const memCount = memResult && memResult.success && memResult.captures ? memResult.captures.length : 0;
-        const fileCount = fileResult && fileResult.success && fileResult.files ? fileResult.files.length : 0;
-        const totalRows = (memResult && memResult.captures ? memResult.captures : [])
-          .reduce((sum, c) => sum + (c.rowCount || 0), 0) +
-          (fileResult && fileResult.files ? fileResult.files : [])
-            .reduce((sum, c) => sum + (c.rowCount || 0), 0);
-        if (memCount > 0 || fileCount > 0) {
-          setStatus('页面渲染进程已崩溃（数据量过大导致内存耗尽），主进程已保留 ' + memCount + ' 个内存数据 + ' + fileCount + ' 个文件缓存（共约 ' + totalRows + ' 行），您可以尝试点击"导出 Excel"直接导出，无需重新加载页面', 'error');
-        } else {
-          setStatus('页面渲染进程已崩溃（数据量过大导致内存耗尽），请缩小查询范围后点击"前往"重新加载', 'error');
-        }
-      }).catch(() => {
-        setStatus('页面渲染进程已崩溃（数据量过大导致内存耗尽），请缩小查询范围后点击"前往"重新加载', 'error');
-      });
-      return;
-    }
-  } catch (_) {}
-  setStatus('页面渲染进程已崩溃（数据量过大导致内存耗尽），请缩小查询范围后点击"前往"重新加载', 'error');
+  setStatus('页面渲染进程已崩溃（数据量过大导致内存耗尽），正在自动重新加载...', 'error');
+  // 崩溃后自动重新加载 webview，避免用户手动操作
+  setTimeout(() => {
+    try {
+      const currentUrl = webview.src;
+      if (currentUrl && currentUrl !== 'about:blank') {
+        webview.reload();
+      }
+    } catch (_) {}
+  }, 2000);
 });
 webview.addEventListener('gpu-crashed', (e) => {
   console.error('[webview] GPU process crashed:', e);

@@ -256,6 +256,31 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       const tabTitle = requestTabTitle || getActiveTabTitle();
       const entryTimestamp = requestStartTime || Date.now();
 
+      // 当新数据到达当前 Tab 时，先清理该 Tab 的旧数据
+      // 这是比 clearOnQueryClick 更可靠的清理方式，因为不依赖按钮点击事件检测
+      // 只清理比当前数据更旧的条目，防止旧轮询结果覆盖新数据
+      if (tabTitle && rowCount > 0) {
+        try {
+          const lowerTitle = tabTitle.toLowerCase();
+          const now = entryTimestamp;
+          for (let i = window.__capturedJsonResponses.length - 1; i >= 0; i--) {
+            const r = window.__capturedJsonResponses[i];
+            const pt = (r.pageTitle || '').toLowerCase();
+            if (pt === lowerTitle || pt.indexOf(lowerTitle) >= 0 || lowerTitle.indexOf(pt) >= 0) {
+              if ((r.timestamp || 0) < now) {
+                if (r.data) r.data = null;
+                window.__capturedJsonResponses.splice(i, 1);
+              }
+            }
+          }
+          if (ipcRenderer) {
+            try {
+              ipcRenderer.send('clear-tab-json', tabTitle);
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+
       if (tabTitle && window.__tabConfigMap[tabTitle] && rowCount > 0 && !/getSearchDeatil/i.test(url || '')) {
         window.__tabResultMap[tabTitle] = {
           url: url || 'unknown',
@@ -741,18 +766,27 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       if (!btn) return;
       if (isQueryButton(btn)) {
         const activeTab = getActiveTabTitle();
-        // 清空当前 Tab 的结果映射
-        if (activeTab && window.__tabResultMap[activeTab]) {
-          delete window.__tabResultMap[activeTab];
+        // 彻底清理当前 Tab 的所有旧数据（包括 webview 和主进程）
+        if (activeTab) {
+          if (typeof window.__clearCapturedJsonByTab === 'function') {
+            window.__clearCapturedJsonByTab(activeTab);
+          }
+          if (ipcRenderer) {
+            try {
+              ipcRenderer.send('clear-tab-json', activeTab);
+            } catch (_) {}
+          }
         }
-        // 立即释放 webview 中所有大数据的 data 引用，避免内存累积
-        // 但保留元数据和文件缓存引用，不清空主进程数据（避免新查询结果丢失）
+        // 清理所有超过5分钟的过期数据，防止内存累积
         try {
+          var now = Date.now();
+          var expireMs = window.__expireMs || 10 * 60 * 1000;
           if (window.__capturedJsonResponses) {
-            for (let i = 0; i < window.__capturedJsonResponses.length; i++) {
-              const r = window.__capturedJsonResponses[i];
-              if (r && r.data) {
-                r.data = null;
+            for (var ci = window.__capturedJsonResponses.length - 1; ci >= 0; ci--) {
+              var cr = window.__capturedJsonResponses[ci];
+              if (cr && (now - (cr.timestamp || 0)) > Math.min(expireMs, 5 * 60 * 1000)) {
+                if (cr.data) cr.data = null;
+                window.__capturedJsonResponses.splice(ci, 1);
               }
             }
           }
@@ -760,22 +794,11 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
             window.__exportDataCache = {};
           }
         } catch (_) {}
+        // 尝试触发 GC
         setTimeout(function() {
-          try {
-            // 释放所有 data 引用，但保留完整元数据（包括 filePath 等），不替换数组
-            if (window.__capturedJsonResponses && window.__capturedJsonResponses.length > 0) {
-              for (let i = 0; i < window.__capturedJsonResponses.length; i++) {
-                const r = window.__capturedJsonResponses[i];
-                if (r && r.data) {
-                  r.data = null;
-                }
-              }
-            }
-            // 尝试触发 GC
-            if (window.gc && typeof window.gc === 'function') {
-              try { window.gc(); } catch (_) {}
-            }
-          } catch (_) {}
+          if (window.gc && typeof window.gc === 'function') {
+            try { window.gc(); } catch (_) {}
+          }
         }, 100);
       }
     } catch (_) {}
@@ -788,8 +811,8 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     try {
       const target = e.target;
       if (!target || !target.closest) return;
-      // 匹配常见的关闭按钮（包括 CDC 平台的 deleteTabs-icon / guanbi）
-      const closeBtn = target.closest('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, .deleteTabs-icon, [class*="close"], [class*="guanbi"]');
+      // 匹配常见的关闭按钮（包括 CDC 平台的 deleteTabs-icon / guanbi / 各种图标）
+      const closeBtn = target.closest('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, .deleteTabs-icon, [class*="close"], [class*="guanbi"], [class*="Close"], svg[class*="close"], i[class*="close"], span[class*="close"], [class*="icon-close"]');
       if (!closeBtn) return;
       // 找到所属的 Tab 元素
       const tabEl = closeBtn.closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item, .flow-tabs-item, .k-tab, .k-tabs-item');

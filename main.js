@@ -313,7 +313,7 @@ function createWindow() {
 }
 
 let mainCapturedResponses = [];
-const MAX_MAIN_CAPTURES = 30;
+const MAX_MAIN_CAPTURES = 10;
 
 // 提取 URL 的去重 key：对 cacheData 轮询请求，去掉 timer 参数后比较
 function getUrlDedupKey(url) {
