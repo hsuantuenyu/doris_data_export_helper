@@ -199,6 +199,16 @@ function getExpireMs() {
   return expireMinutes * 60 * 1000;
 }
 
+// 提取 URL 的去重 key：同一查询的 running/cacheData 端点视为同一个
+function getUrlDedupKey(url) {
+  if (typeof url !== 'string') return url;
+  const m = url.match(/\/ds-standard-query\/(?:running|cacheData)\/(\d+\/\d+)/i);
+  if (m && m[1]) {
+    return 'ds-query:' + m[1];
+  }
+  return url;
+}
+
 async function syncExpireMsToWebview() {
   try {
     await webview.executeJavaScript(`window.__expireMs = ${getExpireMs()};`);
@@ -1636,11 +1646,14 @@ async function scanAllSources(currentTabTitle) {
       const ct = currentTabTitle.trim().toLowerCase();
       if (!(pt === ct || pt.indexOf(ct) >= 0 || ct.indexOf(pt) >= 0)) continue;
     }
-    const urlKey = resp.url || 'unknown';
-    if (!urlMap[urlKey] || (resp.timestamp || 0) > (urlMap[urlKey].timestamp || 0)) {
-      urlMap[urlKey] = resp;
+    const dedupKey = getUrlDedupKey(resp.url || 'unknown');
+    const oldRowCount = urlMap[dedupKey] ? (urlMap[dedupKey].rowCount || 0) : 0;
+    const newRowCount = resp.rowCount || 0;
+    // 数据量更大的优先，或新数据有数据而旧的没有
+    if (!urlMap[dedupKey] || newRowCount > oldRowCount) {
+      urlMap[dedupKey] = resp;
       // 使用主进程数组中的原始索引，确保导出时正确定位
-      captureIndexMap[urlKey] = (typeof resp._mainIndex === 'number') ? resp._mainIndex : i;
+      captureIndexMap[dedupKey] = (typeof resp._mainIndex === 'number') ? resp._mainIndex : i;
     }
   }
   // 如果按当前Tab过滤后没有数据，回退到使用所有数据（避免Tab标题识别差异导致漏数据）
@@ -1650,10 +1663,12 @@ async function scanAllSources(currentTabTitle) {
       if (!resp) continue;
       if (!resp.data && (!resp.headers || resp.headers.length === 0)) continue;
       if ((resp.timestamp || 0) <= now - expireMs) continue;
-      const urlKey = resp.url || 'unknown';
-      if (!urlMap[urlKey] || (resp.timestamp || 0) > (urlMap[urlKey].timestamp || 0)) {
-        urlMap[urlKey] = resp;
-        captureIndexMap[urlKey] = (typeof resp._mainIndex === 'number') ? resp._mainIndex : i;
+      const dedupKey = getUrlDedupKey(resp.url || 'unknown');
+      const oldRowCount = urlMap[dedupKey] ? (urlMap[dedupKey].rowCount || 0) : 0;
+      const newRowCount = resp.rowCount || 0;
+      if (!urlMap[dedupKey] || newRowCount > oldRowCount) {
+        urlMap[dedupKey] = resp;
+        captureIndexMap[dedupKey] = (typeof resp._mainIndex === 'number') ? resp._mainIndex : i;
       }
     }
   }

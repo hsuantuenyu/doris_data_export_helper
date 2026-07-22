@@ -315,10 +315,16 @@ function createWindow() {
 let mainCapturedResponses = [];
 const MAX_MAIN_CAPTURES = 10;
 
-// 提取 URL 的去重 key：对 cacheData 轮询请求，去掉 timer 参数后比较
+// 提取 URL 的去重 key：同一查询的 running/cacheData 端点视为同一个
 function getUrlDedupKey(url) {
   if (typeof url !== 'string') return url;
-  if (/\/(ds-standard-query|cacheData|running)\//i.test(url)) {
+  // 对于 ds-standard-query 的 running/cacheData 端点，基于查询ID去重
+  const m = url.match(/\/ds-standard-query\/(?:running|cacheData)\/(\d+\/\d+)/i);
+  if (m && m[1]) {
+    return 'ds-query:' + m[1];
+  }
+  // 对其他轮询 URL，去掉 timer 参数
+  if (/\/(cacheData|running)\//i.test(url)) {
     try {
       const q = url.indexOf('?');
       if (q === -1) return url;
@@ -346,10 +352,13 @@ function pushMainCapture(entry) {
     });
     if (existingIndex !== -1) {
       const oldEntry = mainCapturedResponses[existingIndex];
-      const oldHasData = oldEntry.data && analyzeJsonStructure(oldEntry.data);
-      const newHasData = entry.data && analyzeJsonStructure(entry.data);
-      // 新数据有有效数组，或旧数据无有效数组，则替换
-      if (newHasData || !oldHasData) {
+      const oldRowCount = oldEntry.rowCount || 0;
+      const newRowCount = entry.rowCount || 0;
+      // 数据量更大的优先，或新数据有数据而旧的没有，则替换
+      const newHasMoreData = newRowCount > oldRowCount;
+      const oldNoData = !oldEntry.data && (!oldEntry.headers || oldEntry.headers.length === 0);
+      const newHasData = entry.data || (entry.headers && entry.headers.length > 0);
+      if (newHasMoreData || (newHasData && oldNoData)) {
         mainCapturedResponses[existingIndex] = entry;
       }
       return;

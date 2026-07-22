@@ -211,8 +211,14 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   // 提取 URL 的去重 key：对 cacheData 轮询请求，去掉 timer 参数后比较
   function getUrlDedupKey(url) {
     if (typeof url !== 'string') return url;
-    // 对 cacheData / running 等轮询 URL，去掉 timer 参数
-    if (/\/(ds-standard-query|cacheData|running)\//i.test(url)) {
+    // 对于 ds-standard-query 的 running/cacheData 端点，基于查询ID去重
+    // 同一查询的不同阶段端点（running/cacheData）视为同一个，只保留最新/最多数据的
+    var m = url.match(/\/ds-standard-query\/(?:running|cacheData)\/(\d+\/\d+)/i);
+    if (m && m[1]) {
+      return 'ds-query:' + m[1];
+    }
+    // 对其他轮询 URL，去掉 timer 参数
+    if (/\/(cacheData|running)\//i.test(url)) {
       try {
         var q = url.indexOf('?');
         if (q === -1) return url;
@@ -360,17 +366,19 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         entry.data = null;
       }
 
-      // 基于 URL dedup key 去重：相同 key 的轮询请求，替换旧数据（优先保留有数据的）
+      // 基于 URL dedup key 去重：相同 key 的视为同一查询，优先保留数据量更大的
       const dedupKey = getUrlDedupKey(url);
       const existingIdx = window.__capturedJsonResponses.findIndex(function(r) {
         return getUrlDedupKey(r.url) === dedupKey;
       });
       if (existingIdx !== -1) {
         var oldEntry = window.__capturedJsonResponses[existingIdx];
-        var oldHasData = oldEntry && oldEntry.data && estimateRowCount(oldEntry.data) > 0;
-        var newHasData = data && estimateRowCount(data) > 0;
-        // 新数据有数据，或旧数据无数据，则替换
-        if (newHasData || !oldHasData) {
+        var oldRowCount = (oldEntry && oldEntry.rowCount) ? oldEntry.rowCount : 0;
+        var newRowCount = rowCount || 0;
+        var newHasMoreData = newRowCount > oldRowCount;
+        var oldNoData = !oldEntry || (!oldEntry.data && (!oldEntry.rowCount || oldEntry.rowCount === 0));
+        // 数据量更大的优先，或新数据有数据而旧的没有，则替换
+        if (newHasMoreData || oldNoData) {
           window.__capturedJsonResponses[existingIdx] = entry;
         }
       } else {
