@@ -549,24 +549,24 @@
       <div class="filename-dropdown-panel" id="filenameDropdownPanel">
         <div class="filename-dropdown-group">
           <div class="filename-dropdown-group-label">前置软件</div>
-          <div class="filename-dropdown-option" data-value="qzrj_realtime_detail">表实时性查询结果统计<span class="opt-en">(qzrj_realtime_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="qzrj_dict_detail">值域一致性查询结果<span class="opt-en">(qzrj_dict_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="qzrj_chief_detail">主诉、现病史明细查询结果<span class="opt-en">(qzrj_chief_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="qzrj_column_update_detail">字段完整性修订部分查询结果<span class="opt-en">(qzrj_column_update_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="qzrj_column_level_1_detail">必填字段查询结果<span class="opt-en">(qzrj_column_level_1_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="qzrj_column_level_2_detail">重要字段建议填查询结果<span class="opt-en">(qzrj_column_level_2_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="qzrj_association_detail">数据关联一致性查询结果<span class="opt-en">(qzrj_association_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="qzrj_column_level_3_detail">重要字段建议填查询结果<span class="opt-en">(qzrj_column_level_3_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="qzrj_realtime_detail">qzrj_realtime_detail（表实时性查询结果统计）</div>
+          <div class="filename-dropdown-option" data-value="qzrj_dict_detail">qzrj_dict_detail（值域一致性查询结果）</div>
+          <div class="filename-dropdown-option" data-value="qzrj_chief_detail">qzrj_chief_detail（主诉、现病史明细查询结果）</div>
+          <div class="filename-dropdown-option" data-value="qzrj_column_update_detail">qzrj_column_update_detail（字段完整性修订部分查询结果）</div>
+          <div class="filename-dropdown-option" data-value="qzrj_column_level_1_detail">qzrj_column_level_1_detail（必填字段查询结果）</div>
+          <div class="filename-dropdown-option" data-value="qzrj_column_level_2_detail">qzrj_column_level_2_detail（重要字段建议填查询结果）</div>
+          <div class="filename-dropdown-option" data-value="qzrj_association_detail">qzrj_association_detail（数据关联一致性查询结果）</div>
+          <div class="filename-dropdown-option" data-value="qzrj_column_level_3_detail">qzrj_column_level_3_detail（重要字段建议填查询结果）</div>
         </div>
         <div class="filename-dropdown-group">
           <div class="filename-dropdown-group-label">省标41张表</div>
-          <div class="filename-dropdown-option" data-value="prov_timeliness_detail">省标表时效性统计<span class="opt-en">(prov_timeliness_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="prov_association_detail">省标表关联关系统计<span class="opt-en">(prov_association_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="prov_chief_detail">省标表主诉、现病史统计<span class="opt-en">(prov_chief_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="prov_column_level_1_detail">省标必填字段统计<span class="opt-en">(prov_column_level_1_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="prov_column_level_2_detail">省标重要建议填字段统计<span class="opt-en">(prov_column_level_2_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="prov_column_level_3_detail">省标条件必填字段统计<span class="opt-en">(prov_column_level_3_detail)</span></div>
-          <div class="filename-dropdown-option" data-value="prov_column_level_update_detail">省标必填、条件必填字段完整性统计_更新部分<span class="opt-en">(prov_column_level_update_detail)</span></div>
+          <div class="filename-dropdown-option" data-value="prov_timeliness_detail">prov_timeliness_detail（省标表时效性统计）</div>
+          <div class="filename-dropdown-option" data-value="prov_association_detail">prov_association_detail（省标表关联关系统计）</div>
+          <div class="filename-dropdown-option" data-value="prov_chief_detail">prov_chief_detail（省标表主诉、现病史统计）</div>
+          <div class="filename-dropdown-option" data-value="prov_column_level_1_detail">prov_column_level_1_detail（省标必填字段统计）</div>
+          <div class="filename-dropdown-option" data-value="prov_column_level_2_detail">prov_column_level_2_detail（省标重要建议填字段统计）</div>
+          <div class="filename-dropdown-option" data-value="prov_column_level_3_detail">prov_column_level_3_detail（省标条件必填字段统计）</div>
+          <div class="filename-dropdown-option" data-value="prov_column_level_update_detail">prov_column_level_update_detail（省标必填、条件必填字段完整性统计_更新部分）</div>
         </div>
       </div>
     </div>
@@ -581,7 +581,7 @@
 
   <div class="webview-container">
     <webview id="webview" src="about:blank"
-      preload=""
+      preload="./webview-preload.js"
       webpreferences="contextIsolation=yes,nodeIntegration=no,javascript=yes"
       allowpopups
       style="width:100%; height:100%;">

@@ -315,17 +315,57 @@ function createWindow() {
 let mainCapturedResponses = [];
 const MAX_MAIN_CAPTURES = 30;
 
+// 提取 URL 的去重 key：对 cacheData 轮询请求，去掉 timer 参数后比较
+function getUrlDedupKey(url) {
+  if (typeof url !== 'string') return url;
+  if (/\/(ds-standard-query|cacheData|running)\//i.test(url)) {
+    try {
+      const q = url.indexOf('?');
+      if (q === -1) return url;
+      const base = url.substring(0, q);
+      const qs = url.substring(q + 1);
+      const pairs = qs.split('&');
+      const kept = [];
+      for (let i = 0; i < pairs.length; i++) {
+        if (!pairs[i].startsWith('timer=')) {
+          kept.push(pairs[i]);
+        }
+      }
+      return base + '?' + kept.sort().join('&');
+    } catch(_) {}
+  }
+  return url;
+}
+
 function pushMainCapture(entry) {
   try {
     const now = Date.now();
-    const existingIndex = mainCapturedResponses.findIndex(r => r.url === entry.url && (now - r.timestamp) < 5000);
+    const dedupKey = getUrlDedupKey(entry.url);
+    const existingIndex = mainCapturedResponses.findIndex(r => {
+      return getUrlDedupKey(r.url) === dedupKey && (now - r.timestamp) < 300000; // 5分钟内相同key的去重
+    });
     if (existingIndex !== -1) {
-      mainCapturedResponses[existingIndex] = entry;
+      const oldEntry = mainCapturedResponses[existingIndex];
+      const oldHasData = oldEntry.data && analyzeJsonStructure(oldEntry.data);
+      const newHasData = entry.data && analyzeJsonStructure(entry.data);
+      // 新数据有有效数组，或旧数据无有效数组，则替换
+      if (newHasData || !oldHasData) {
+        mainCapturedResponses[existingIndex] = entry;
+      }
       return;
     }
-    // 大数据（>2MB 或标记为 isHuge）立即释放 data 引用，只保留元数据
-    // 文件缓存机制已确保大数据保存到磁盘，无需在内存中保留完整对象
-    if (entry.isHuge || (entry.size || 0) > 2 * 1024 * 1024) {
+    // 大数据（>2MB 或标记为 isHuge/isBig）立即释放 data 引用，保存到文件
+    if (entry.data && (entry.isHuge || entry.isBig || (entry.size || 0) > 2 * 1024 * 1024)) {
+      // 释放前先保存到文件缓存（如果没有 jsonFilePath）
+      if (!entry.jsonFilePath) {
+        try {
+          const savedInfo = saveJsonToFile(entry);
+          if (savedInfo) {
+            entry.jsonFilePath = savedInfo.filePath;
+            pushJsonFileCache(savedInfo);
+          }
+        } catch (_) {}
+      }
       entry.data = null;
     }
     mainCapturedResponses.push(entry);
@@ -366,6 +406,7 @@ function getMainCaptures() {
       headers: r.headers || [],
       colCount: r.colCount || 0,
       path: r.path || '',
+      jsonFilePath: r.jsonFilePath || '',  // 传递文件缓存路径，供导出时使用
       _mainIndex: index  // 保留主进程数组中的原始索引，确保导出时能正确定位
     };
     // 只有小数据（<=5000行）才传递完整 data 到渲染进程
@@ -802,48 +843,97 @@ ipcMain.handle('export-excel', async (_event, { sourceInfo, defaultFileName }) =
       }
     } else if (typeof sourceInfo.mainCaptureIndex === 'number' && mainCapturedResponses[sourceInfo.mainCaptureIndex]) {
       const capture = mainCapturedResponses[sourceInfo.mainCaptureIndex];
+      // 如果 data 已释放，但有 jsonFilePath 或 sourceInfo.jsonFilePath，从文件读取
+      const captureFilePath = sourceInfo.jsonFilePath || capture.jsonFilePath || '';
       if (!capture.data) {
-        return { success: false, message: currentLang === 'zh' ? '数据已从内存释放，请重新查询后再导出' : 'Data released from memory, please re-query before exporting' };
-      }
-      const arr = getArrayByPath(capture.data, sourceInfo.path);
-      if (Array.isArray(arr)) {
-        const BATCH_SIZE = 5000;
-        const headers = sourceInfo.headers;
-        const totalRows = arr.length;
-        let processed = 0;
-        for (let i = 0; i < arr.length; i += BATCH_SIZE) {
-          const end = Math.min(i + BATCH_SIZE, arr.length);
-          for (let idx = i; idx < end; idx++) {
-            const item = arr[idx];
-            if (item && typeof item === 'object' && !Array.isArray(item)) {
-              const row = [];
-              for (let h = 0; h < headers.length; h++) {
-                const v = item[headers[h]];
-                if (v === null || v === undefined) row.push('');
-                else if (typeof v === 'object') row.push(JSON.stringify(v));
-                else row.push(v);
+        if (captureFilePath && fs.existsSync(captureFilePath)) {
+          // 回退到文件缓存路径
+          const fileData = JSON.parse(fs.readFileSync(captureFilePath, 'utf-8'));
+          const arr = getArrayByPath(fileData, sourceInfo.path);
+          if (Array.isArray(arr)) {
+            const BATCH_SIZE = 5000;
+            const headers = sourceInfo.headers;
+            const totalRows = arr.length;
+            let processed = 0;
+            for (let i = 0; i < arr.length; i += BATCH_SIZE) {
+              const end = Math.min(i + BATCH_SIZE, arr.length);
+              for (let idx = i; idx < end; idx++) {
+                const item = arr[idx];
+                if (item && typeof item === 'object' && !Array.isArray(item)) {
+                  const row = [];
+                  for (let h = 0; h < headers.length; h++) {
+                    const v = item[headers[h]];
+                    if (v === null || v === undefined) row.push('');
+                    else if (typeof v === 'object') row.push(JSON.stringify(v));
+                    else row.push(v);
+                  }
+                  ws.addRow(row);
+                } else if (Array.isArray(item)) {
+                  const row = [];
+                  for (let h = 0; h < item.length; h++) {
+                    const v = item[h];
+                    if (v === null || v === undefined) row.push('');
+                    else if (typeof v === 'object') row.push(JSON.stringify(v));
+                    else row.push(v);
+                  }
+                  ws.addRow(row);
+                } else {
+                  ws.addRow([item]);
+                }
               }
-              ws.addRow(row);
-            } else if (Array.isArray(item)) {
-              const row = [];
-              for (let h = 0; h < item.length; h++) {
-                const v = item[h];
-                if (v === null || v === undefined) row.push('');
-                else if (typeof v === 'object') row.push(JSON.stringify(v));
-                else row.push(v);
+              processed += (end - i);
+              if (mainWindow) {
+                mainWindow.webContents.send('export-progress', { processed, total: totalRows });
               }
-              ws.addRow(row);
-            } else {
-              ws.addRow([item]);
             }
+          } else {
+            return { success: false, message: currentLang === 'zh' ? '文件数据中未找到对应数组，请重新查询' : 'Array not found in file data, please re-query' };
           }
-          processed += (end - i);
-          if (mainWindow) {
-            mainWindow.webContents.send('export-progress', { processed, total: totalRows });
-          }
+        } else {
+          return { success: false, message: currentLang === 'zh' ? '数据已从内存释放，请重新查询后再导出' : 'Data released from memory, please re-query before exporting' };
         }
       } else {
-        return { success: false, message: currentLang === 'zh' ? '主进程数据中未找到对应数组，请重新查询' : 'Array not found in main process data, please re-query' };
+        // capture.data 存在，从内存读取
+        const arr = getArrayByPath(capture.data, sourceInfo.path);
+        if (Array.isArray(arr)) {
+          const BATCH_SIZE = 5000;
+          const headers = sourceInfo.headers;
+          const totalRows = arr.length;
+          let processed = 0;
+          for (let i = 0; i < arr.length; i += BATCH_SIZE) {
+            const end = Math.min(i + BATCH_SIZE, arr.length);
+            for (let idx = i; idx < end; idx++) {
+              const item = arr[idx];
+              if (item && typeof item === 'object' && !Array.isArray(item)) {
+                const row = [];
+                for (let h = 0; h < headers.length; h++) {
+                  const v = item[headers[h]];
+                  if (v === null || v === undefined) row.push('');
+                  else if (typeof v === 'object') row.push(JSON.stringify(v));
+                  else row.push(v);
+                }
+                ws.addRow(row);
+              } else if (Array.isArray(item)) {
+                const row = [];
+                for (let h = 0; h < item.length; h++) {
+                  const v = item[h];
+                  if (v === null || v === undefined) row.push('');
+                  else if (typeof v === 'object') row.push(JSON.stringify(v));
+                  else row.push(v);
+                }
+                ws.addRow(row);
+              } else {
+                ws.addRow([item]);
+              }
+            }
+            processed += (end - i);
+            if (mainWindow) {
+              mainWindow.webContents.send('export-progress', { processed, total: totalRows });
+            }
+          }
+        } else {
+          return { success: false, message: currentLang === 'zh' ? '主进程数据中未找到对应数组，请重新查询' : 'Array not found in main process data, please re-query' };
+        }
       }
     } else if (wc && sourceInfo.cacheId) {
       // 大数据模式：主进程直接从 webview 分批获取，避免渲染进程阻塞

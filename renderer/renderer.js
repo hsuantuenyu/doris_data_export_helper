@@ -923,10 +923,9 @@ async function injectJsonCapture() {
 	          /\\/i\\/dds\\/tempSearch\\/getTempSearchTree/,
 	          /\\/i\\/dds\\/recycle\\/getRecycleTree/,
 	          /\\/i\\/md-query\\/query\\/db\\/list\\/min\\/granted/,
-			  /\\/i\\/authprivilege\\/api\\/menus/,
-			  /\\/i\\/project\\/api\\/projects\\/participantAll/,
-			  /\\/ds-standard-query\\/cacheData\\//
-	        ];
+		  /\\/i\\/authprivilege\\/api\\/menus/,
+		  /\\/i\\/project\\/api\\/projects\\/participantAll/
+        ];
 	  
 	        function isBlacklisted(url) {
 	          if (!url) return false;
@@ -1628,6 +1627,7 @@ async function scanAllSources(currentTabTitle) {
     console.log('[scanAllSources] get captured from main failed:', e);
   }
 
+  // 如果主进程完全没有数据，直接回退到 webview 扫描
   if ((!captures || captures.length === 0) && (!fileCaptures || fileCaptures.length === 0)) {
     return await scanAllSourcesFromWebview(currentTabTitle);
   }
@@ -1707,7 +1707,8 @@ async function scanAllSources(currentTabTitle) {
               timestamp: resp.timestamp,
               mainCaptureIndex: typeof mainCaptureIndex === 'number' ? mainCaptureIndex : undefined,
               path: r.path,
-              pageTitle: resp.pageTitle || ''
+              pageTitle: resp.pageTitle || '',
+              jsonFilePath: resp.jsonFilePath || ''  // 传递文件缓存路径，导出时从文件读取
             });
           }
         }
@@ -1748,7 +1749,7 @@ async function scanAllSources(currentTabTitle) {
       console.log('[scanAllSources] file cache error:', e);
     }
   }
-  // 如果按Tab过滤后内存数据和文件缓存都没有匹配到，回退到所有文件缓存
+  // 如果按Tab过滤后内存数据和文件缓存都没有匹配到，回退到所有文件缓存（不过滤Tab）
   if (currentTabTitle && sources.length === 0) {
     for (let i = 0; i < fileCaptures.length; i++) {
       const finfo = fileCaptures[i];
@@ -1773,6 +1774,14 @@ async function scanAllSources(currentTabTitle) {
         }
       } catch (e) {
         console.log('[scanAllSources] file cache fallback error:', e);
+      }
+    }
+    // 文件缓存也没有匹配，回退到 webview 扫描（不过滤Tab，获取webview中实时数据）
+    if (sources.length === 0) {
+      console.log('[scanAllSources] No data after Tab filter, falling back to webview scan');
+      const webviewSources = await scanAllSourcesFromWebview('');
+      if (webviewSources && webviewSources.length > 0) {
+        return webviewSources;
       }
     }
   }
@@ -2540,9 +2549,17 @@ async function doExport(source) {
       rowCount: source.rowCount,
       headers: source.headers
     };
-    if (typeof source.mainCaptureIndex === 'number') {
+    // 优先使用 webview 实时数据（originalArray/cacheId），其次才是主进程缓存
+    if (source.originalArray && source.cacheId) {
+      // webview 中有实时大数据，优先使用 cacheId 路径
+      sourceInfo.cacheId = source.cacheId;
+    } else if (typeof source.mainCaptureIndex === 'number') {
       sourceInfo.mainCaptureIndex = source.mainCaptureIndex;
       sourceInfo.path = source.path;
+      // 如果主进程中的 data 已释放但有文件缓存，传递 jsonFilePath
+      if (source.jsonFilePath) {
+        sourceInfo.jsonFilePath = source.jsonFilePath;
+      }
     }
     if (source.isFileSource && source.jsonFilePath) {
       sourceInfo.jsonFilePath = source.jsonFilePath;

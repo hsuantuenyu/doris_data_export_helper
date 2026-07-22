@@ -58,6 +58,8 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   const HUGE_ROW_THRESHOLD = 15000;
   const RENDER_ROW_LIMIT = 5000;
   const WEBVIEW_DATA_KEEP_LIMIT = 2000;
+  // 超过此行数的数据通过主进程保存到文件，webview 不保留 data 引用
+  const FILE_CACHE_ROW_THRESHOLD = 5000;
 
   function truncateDataForRender(data, limit) {
     if (!data || typeof data !== 'object') return;
@@ -206,6 +208,29 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   }
   window.__getActiveTabTitle = getActiveTabTitle;
 
+  // 提取 URL 的去重 key：对 cacheData 轮询请求，去掉 timer 参数后比较
+  function getUrlDedupKey(url) {
+    if (typeof url !== 'string') return url;
+    // 对 cacheData / running 等轮询 URL，去掉 timer 参数
+    if (/\/(ds-standard-query|cacheData|running)\//i.test(url)) {
+      try {
+        var q = url.indexOf('?');
+        if (q === -1) return url;
+        var base = url.substring(0, q);
+        var qs = url.substring(q + 1);
+        var pairs = qs.split('&');
+        var kept = [];
+        for (var i = 0; i < pairs.length; i++) {
+          if (pairs[i].indexOf('timer=') !== 0) {
+            kept.push(pairs[i]);
+          }
+        }
+        return base + '?' + kept.sort().join('&');
+      } catch(_) {}
+    }
+    return url;
+  }
+
   function pushResponse(url, data, size, requestTabTitle, requestStartTime) {
     try {
       if (/getSearchDeatil/i.test(url || '')) {
@@ -226,6 +251,8 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       const rowCount = estimateRowCount(data);
       const isBig = (size || 0) > BIG_RESPONSE_THRESHOLD || rowCount > BIG_ROW_THRESHOLD;
       const isHuge = (size || 0) > HUGE_RESPONSE_THRESHOLD || rowCount > HUGE_ROW_THRESHOLD;
+      // 大数据需要保存到文件缓存（不仅是 isHuge，isBig 且超过 FILE_CACHE_ROW_THRESHOLD 也需要）
+      const needFileCache = isHuge || (isBig && rowCount > FILE_CACHE_ROW_THRESHOLD);
       const tabTitle = requestTabTitle || getActiveTabTitle();
       const entryTimestamp = requestStartTime || Date.now();
 
@@ -238,7 +265,8 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         };
       }
 
-      if (isHuge && ipcRenderer) {
+      // 超大数据直接保存到文件，webview 中不保留 data 引用
+      if (needFileCache && ipcRenderer) {
         try {
           const entryForFile = {
             url: url || 'unknown',
@@ -263,7 +291,16 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
                 filePath: r.info.filePath,
                 requestStartTime: requestStartTime
               };
-              window.__capturedJsonResponses.push(lightEntry);
+              // 基于 URL dedup key 去重：相同 key 的轮询请求，替换旧数据
+              const dedupKey = getUrlDedupKey(url);
+              const existingIdx = window.__capturedJsonResponses.findIndex(function(r) {
+                return getUrlDedupKey(r.url) === dedupKey;
+              });
+              if (existingIdx !== -1) {
+                window.__capturedJsonResponses[existingIdx] = lightEntry;
+              } else {
+                window.__capturedJsonResponses.push(lightEntry);
+              }
               if (window.__capturedJsonResponses.length > MAX_BIG_KEEP) {
                 window.__capturedJsonResponses.splice(0, window.__capturedJsonResponses.length - MAX_BIG_KEEP);
               }
@@ -298,7 +335,22 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         entry.data = null;
       }
 
-      window.__capturedJsonResponses.push(entry);
+      // 基于 URL dedup key 去重：相同 key 的轮询请求，替换旧数据（优先保留有数据的）
+      const dedupKey = getUrlDedupKey(url);
+      const existingIdx = window.__capturedJsonResponses.findIndex(function(r) {
+        return getUrlDedupKey(r.url) === dedupKey;
+      });
+      if (existingIdx !== -1) {
+        var oldEntry = window.__capturedJsonResponses[existingIdx];
+        var oldHasData = oldEntry && oldEntry.data && estimateRowCount(oldEntry.data) > 0;
+        var newHasData = data && estimateRowCount(data) > 0;
+        // 新数据有数据，或旧数据无数据，则替换
+        if (newHasData || !oldHasData) {
+          window.__capturedJsonResponses[existingIdx] = entry;
+        }
+      } else {
+        window.__capturedJsonResponses.push(entry);
+      }
 
       const maxKeep = isBig ? MAX_BIG_KEEP : MAX_SMALL_KEEP;
       if (window.__capturedJsonResponses.length > maxKeep) {
@@ -342,7 +394,6 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   function shouldCaptureUrl(url) {
     if (typeof url !== 'string') return false;
     if (/\.(js|css|png|jpg|jpeg|gif|svg|woff|woff2|ttf|eot|ico|map)(\?|$)/i.test(url)) return false;
-    if (/\/ds-standard-query\/cacheData\//i.test(url)) return false;
     for (var i = 0; i < IGNORE_API_PATTERNS.length; i++) {
       if (IGNORE_API_PATTERNS[i].test(url)) return false;
     }
@@ -453,6 +504,8 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
           }
         }
       } catch (_) {}
+
+
     });
 
     return xhr;
@@ -619,6 +672,60 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     return origPromise.then(function(data) {
       return data;
     });
+  };
+
+  // 覆盖 Response.prototype.text，捕获使用 fetch + .text() 获取 JSON 数据的请求
+  const originalResponseText = Response.prototype.text;
+  Response.prototype.text = function() {
+    const resp = this;
+    const url = currentFetchUrl || (resp.url || '');
+    const requestInfo = fetchRequestInfo.get(resp) || {};
+    const requestTabTitle = requestInfo.tabTitle || '';
+    const requestStartTime = requestInfo.startTime || Date.now();
+
+    const origPromise = originalResponseText.apply(this, arguments);
+
+    if (shouldCaptureUrl(url)) {
+      return origPromise.then(function(text) {
+        if (text && text.length > 100 && text.length <= 50 * 1024 * 1024) {
+          const firstChar = text.trim().charAt(0);
+          if (firstChar === '{' || firstChar === '[') {
+            try {
+              const data = JSON.parse(text);
+              if (data && typeof data === 'object') {
+                const size = text.length;
+                const rowCount = estimateRowCount(data);
+                const isBig = size > BIG_RESPONSE_THRESHOLD || rowCount > BIG_ROW_THRESHOLD;
+                const isHuge = size > HUGE_RESPONSE_THRESHOLD || rowCount > HUGE_ROW_THRESHOLD;
+
+                if (isHuge) {
+                  setTimeout(function() {
+                    try {
+                      pushResponse(url, data, size, requestTabTitle, requestStartTime);
+                    } catch (_) {}
+                  }, 50);
+                } else if (isBig) {
+                  setTimeout(function() {
+                    try {
+                      pushResponse(url, data, size, requestTabTitle, requestStartTime);
+                    } catch (_) {}
+                    try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
+                  }, 0);
+                } else {
+                  pushResponse(url, data, size, requestTabTitle, requestStartTime);
+                  if (rowCount > RENDER_ROW_LIMIT) {
+                    try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
+                  }
+                }
+              }
+            } catch (_) {}
+          }
+        }
+        return text;
+      });
+    }
+
+    return origPromise;
   };
 
   function isQueryButton(btn) {
