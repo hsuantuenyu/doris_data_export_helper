@@ -50,8 +50,8 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   } catch (_) {}
 };
 
-  const BIG_RESPONSE_THRESHOLD = 1 * 1024 * 1024;
-  const HUGE_RESPONSE_THRESHOLD = 2 * 1024 * 1024;
+  const BIG_RESPONSE_THRESHOLD = 2 * 1024 * 1024;
+  const HUGE_RESPONSE_THRESHOLD = 4 * 1024 * 1024;
   const MAX_BIG_KEEP = 1;
   const MAX_SMALL_KEEP = 5;
   const BIG_ROW_THRESHOLD = 10000;
@@ -213,7 +213,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     if (typeof url !== 'string') return url;
     // 对于 ds-standard-query 的 running/cacheData 端点，基于查询ID去重
     // 同一查询的不同阶段端点（running/cacheData）视为同一个，只保留最新/最多数据的
-    var m = url.match(/\/ds-standard-query\/(?:running|cacheData)\/(\d+\/\d+)/i);
+    var m = url.match(/\/(?:i\/)?ds-standard-query\/(?:running|cacheData)\/(\d+\/\d+)/i);
     if (m && m[1]) {
       return 'ds-query:' + m[1];
     }

@@ -364,7 +364,7 @@ function pushMainCapture(entry) {
       return;
     }
     // 大数据（>2MB 或标记为 isHuge/isBig）立即释放 data 引用，保存到文件
-    if (entry.data && (entry.isHuge || entry.isBig || (entry.size || 0) > 2 * 1024 * 1024)) {
+    if (entry.data && (entry.isHuge || entry.isBig || (entry.size || 0) > 4 * 1024 * 1024)) {
       // 释放前先保存到文件缓存（如果没有 jsonFilePath）
       if (!entry.jsonFilePath) {
         try {
@@ -685,6 +685,19 @@ ipcMain.on('re-fetch-and-save', (_event, payload) => {
               path: analysis ? analysis.path : ''
             };
             pushJsonFileCache(info);
+            pushMainCapture({
+              url: url,
+              timestamp: timestamp,
+              size: stats.size,
+              rowCount: analysis ? analysis.rowCount : 0,
+              isBig: true,
+              isHuge: true,
+              pageTitle: payload.pageTitle || '',
+              headers: analysis ? analysis.headers : [],
+              colCount: analysis ? analysis.colCount : 0,
+              path: analysis ? analysis.path : '',
+              jsonFilePath: filePath
+            });
           } catch (e) {
             console.error('[re-fetch-and-save] save error:', e);
           }

@@ -202,7 +202,7 @@ function getExpireMs() {
 // 提取 URL 的去重 key：同一查询的 running/cacheData 端点视为同一个
 function getUrlDedupKey(url) {
   if (typeof url !== 'string') return url;
-  const m = url.match(/\/ds-standard-query\/(?:running|cacheData)\/(\d+\/\d+)/i);
+  const m = url.match(/\/(?:i\/)?ds-standard-query\/(?:running|cacheData)\/(\d+\/\d+)/i);
   if (m && m[1]) {
     return 'ds-query:' + m[1];
   }
@@ -1601,6 +1601,201 @@ async function scanAllSourcesFromWebview(currentTabTitle) {
   }
 }
 
+// 扫描页面中的HTML表格（兜底方案）
+async function scanHtmlTablesFromWebview() {
+  const scanCode = `
+    (function() {
+      const sources = [];
+      let nextId = 1;
+      
+      // 获取当前Tab标题
+      let currentTabTitle = '';
+      if (typeof window.__getActiveTabTitle === 'function') {
+        currentTabTitle = window.__getActiveTabTitle();
+      }
+      
+      // 辅助函数：从Kendo UI表格中提取表头
+      function extractKendoHeaders(tableEl) {
+        const headers = [];
+        // Kendo UI 表头可能在 table-header 中
+        const thead = tableEl.querySelector('thead');
+        if (thead) {
+          // 情况1: th 在 tr 中
+          const ths = thead.querySelectorAll('th');
+          ths.forEach(th => {
+            const t = (th.textContent || '').trim();
+            if (t) headers.push(t);
+          });
+        }
+        return headers;
+      }
+      
+      // 辅助函数：从Kendo UI的table-body中提取数据
+      function extractKendoRows(tableEl, headerColCount) {
+        const rows = [];
+        const trs = tableEl.querySelectorAll('tbody tr');
+        for (let i = 0; i < trs.length; i++) {
+          const tr = trs[i];
+          const cells = tr.querySelectorAll('td');
+          if (cells.length === 0) continue;
+          const row = [];
+          cells.forEach(td => row.push((td.textContent || '').trim()));
+          if (row.some(c => c !== '')) rows.push(row);
+        }
+        return rows;
+      }
+      
+      // 辅助函数：尝试从元素中获取所有列名（用于Kendo UI colgroup）
+      function getColNames(tableEl) {
+        const colgroup = tableEl.querySelector('colgroup');
+        if (!colgroup) return [];
+        // Kendo UI 通常将列名存储在 title 属性或col的name属性中
+        const cols = colgroup.querySelectorAll('col');
+        const names = [];
+        cols.forEach(col => {
+          const name = col.getAttribute('name') || col.getAttribute('title') || '';
+          names.push(name);
+        });
+        return names;
+      }
+      
+      // 查找页面中所有有数据的表格
+      const tables = document.querySelectorAll('table');
+      for (let ti = 0; ti < tables.length; ti++) {
+        const table = tables[ti];
+        if (!table || table.offsetParent === null) continue;
+        
+        // 1. 尝试从 this table 提取
+        let headers = extractKendoHeaders(table);
+        let rows = extractKendoRows(table, headers.length);
+        
+        // 2. 如果 this table 没有数据，可能是Kendo UI分离式表格
+        // Kendo UI 通常是 table-header 包含表头，table-body 包含数据
+        if (rows.length < 2) {
+          // 优先从最近的 .table-main 容器中查找 table-header 和 table-body
+          const container = table.closest('.table-main, .k-table, [class*="k-grid"]') || table.parentElement;
+          if (container) {
+            const tableHeader = container.querySelector('.table-header table');
+            const tableBody = container.querySelector('.table-body table');
+            if (tableHeader && tableBody) {
+              headers = extractKendoHeaders(tableHeader);
+              if (headers.length === 0) {
+                // 尝试从 colgroup 推断列数
+                const cols = tableHeader.querySelectorAll('colgroup col');
+                if (cols.length > 0) {
+                  // 没法直接获取列名，使用通用名
+                  for (let i = 0; i < cols.length; i++) {
+                    headers.push('column_' + (i + 1));
+                  }
+                }
+              }
+              rows = extractKendoRows(tableBody, headers.length);
+            }
+          }
+        }
+        
+        // 3. 如果还是没有数据，尝试查找附近的Kendo UI表格结构
+        if (rows.length < 2) {
+          const closest = table.closest('.k-table, .table-main, [class*="k-grid"]');
+          if (closest) {
+            const tableHeader = closest.querySelector('.table-header table');
+            const tableBody = closest.querySelector('.table-body table') || closest.querySelector('table');
+            if (tableHeader) {
+              headers = extractKendoHeaders(tableHeader);
+            }
+            if (tableBody) {
+              rows = extractKendoRows(tableBody, headers.length);
+            }
+          }
+        }
+        
+        // 4. 普通表格回退（标准 <tr> 结构）
+        if (rows.length < 2) {
+          const thead = table.querySelector('thead');
+          if (thead) {
+            const headerRows = thead.querySelectorAll('tr');
+            if (headerRows.length > 0) {
+              headers = [];
+              const lastHeaderRow = headerRows[headerRows.length - 1];
+              lastHeaderRow.querySelectorAll('th').forEach(th => {
+                const t = (th.textContent || '').trim();
+                if (t) headers.push(t);
+              });
+            }
+          }
+          if (rows.length < 2) {
+            const tbody = table.querySelector('tbody') || table;
+            const trs = tbody.querySelectorAll('tr');
+            rows = [];
+            for (let ri = 0; ri < trs.length; ri++) {
+              const tr = trs[ri];
+              const cells = tr.querySelectorAll('td');
+              if (cells.length === 0) continue;
+              const row = [];
+              cells.forEach(td => row.push((td.textContent || '').trim()));
+              if (row.some(c => c !== '')) rows.push(row);
+            }
+          }
+        }
+        
+        // 5. 过滤掉小表格和无标题表格
+        if (headers.length >= 3 && rows.length >= 2 && rows.length <= 50000) {
+          // 检查表头是否都是"column_N"这种通用名（说明未获取到真实列名）
+          const allGeneric = headers.every(h => /^column_\\d+$/.test(h));
+          if (allGeneric) {
+            // 尝试从全局已捕获的JSON数据中推断列名
+            try {
+              const resps = (window.__capturedJsonResponses || []);
+              for (let i = 0; i < resps.length; i++) {
+                const r = resps[i];
+                if (r && r.data) {
+                  // 尝试从 result.data 数组提取
+                  let arr = null;
+                  if (Array.isArray(r.data)) arr = r.data;
+                  else if (r.data.result && Array.isArray(r.data.result.data)) arr = r.data.result.data;
+                  else if (r.data.data && Array.isArray(r.data.data)) arr = r.data.data;
+                  if (arr && arr.length > 0 && arr[0] && typeof arr[0] === 'object') {
+                    const realHeaders = Object.keys(arr[0]);
+                    if (realHeaders.length === headers.length) {
+                      headers = realHeaders;
+                      break;
+                    }
+                  }
+                }
+              }
+            } catch (e) {}
+          }
+          
+          // 生成唯一选择器
+          let selector = 'table:nth-of-type(' + (ti + 1) + ')';
+          sources.push({
+            id: 'html_table_' + nextId++,
+            type: 'html',
+            source: selector,
+            selector: selector,
+            headers: headers.slice(0, 80),
+            rows: rows,
+            rowCount: rows.length,
+            colCount: Math.min(headers.length, 80),
+            timestamp: Date.now(),
+            pageTitle: currentTabTitle
+          });
+        }
+      }
+      
+      // 按行数降序排列
+      sources.sort((a, b) => b.rowCount - a.rowCount);
+      return sources.slice(0, 5);
+    })()
+  `;
+  try {
+    const result = await webview.executeJavaScript(scanCode);
+    return Array.isArray(result) ? result : [];
+  } catch (_) {
+    return [];
+  }
+}
+
 // 优先从主进程获取已捕获的 JSON 数据，避免 webview 渲染进程因大数据崩溃
 async function scanAllSources(currentTabTitle) {
   let captures = [];
@@ -1622,9 +1817,13 @@ async function scanAllSources(currentTabTitle) {
     console.log('[scanAllSources] get captured from main failed:', e);
   }
 
-  // 如果主进程完全没有数据，直接回退到 webview 扫描
+  // 如果主进程完全没有数据，先尝试 webview 扫描（JSON）
+  let webviewSources = [];
   if ((!captures || captures.length === 0) && (!fileCaptures || fileCaptures.length === 0)) {
-    return await scanAllSourcesFromWebview(currentTabTitle);
+    webviewSources = await scanAllSourcesFromWebview(currentTabTitle);
+    if (webviewSources && webviewSources.length > 0) {
+      return webviewSources;
+    }
   }
 
   const sources = [];
@@ -1695,7 +1894,7 @@ async function scanAllSources(currentTabTitle) {
       if (results && results.length > 0) {
         for (const r of results) {
           if (r && r.headers && r.headers.length > 0 && r.rowCount > 0 && r.rowCount <= 200000) {
-            const mainCaptureIndex = captureIndexMap[resp.url];
+            const mainCaptureIndex = captureIndexMap[getUrlDedupKey(resp.url)];
             sources.push({
               id: 'json_' + nextId++,
               type: 'json',
@@ -1783,6 +1982,19 @@ async function scanAllSources(currentTabTitle) {
       if (webviewSources && webviewSources.length > 0) {
         return webviewSources;
       }
+    }
+  }
+
+  // 最后兜底：扫描页面中的HTML表格
+  if (sources.length === 0) {
+    console.log('[scanAllSources] No JSON sources found, trying HTML table scan');
+    try {
+      const htmlSources = await scanHtmlTablesFromWebview();
+      if (htmlSources && htmlSources.length > 0) {
+        return htmlSources;
+      }
+    } catch (e) {
+      console.log('[scanAllSources] HTML table scan error:', e);
     }
   }
 
@@ -2522,6 +2734,15 @@ btnConfirmExport.addEventListener('click', async () => {
 });
 
 async function doExport(source) {
+  // 调试：输出 source 的实际内容
+  console.log('[doExport] source.type:', source.type);
+  console.log('[doExport] source.headers:', source.headers);
+  console.log('[doExport] source.headers.length:', source.headers ? source.headers.length : 'null');
+  console.log('[doExport] source.rowCount:', source.rowCount);
+  console.log('[doExport] source.rows.length:', source.rows ? source.rows.length : 'null');
+  if (source.rows && source.rows[0]) {
+    console.log('[doExport] source.rows[0]:', source.rows[0]);
+  }
   setStatus(tr('statusExporting') + ' (' + source.rowCount + ' ' + (currentLang === 'zh' ? '行' : 'rows') + ')...');
 
   // 生成文件名
