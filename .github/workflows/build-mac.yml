@@ -1,0 +1,102 @@
+name: Build macOS App
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-mac:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Intel 架构 (x64)
+          - arch: x64
+            runner: macos-13
+            display: Intel (x64)
+          # Apple Silicon / M2 架构 (arm64)
+          - arch: arm64
+            runner: macos-14
+            display: Apple Silicon (arm64)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Build macOS app (${{ matrix.arch }})
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CI 环境无 Apple 开发者证书，禁用自动签名
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac --${{ matrix.arch }}
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Doris-Export-Helper-macOS-${{ matrix.arch }}-dmg
+          path: dist/*.dmg
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Doris-Export-Helper-macOS-${{ matrix.arch }}-zip
+          path: dist/*.zip
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload latest-mac.yml (for auto-updater)
+        uses: actions/upload-artifact@v4
+        with:
+          name: latest-mac-${{ matrix.arch }}
+          path: dist/latest-mac.yml
+          if-no-files-found: warn
+          retention-days: 30
+
+  release:
+    name: Release (on tag)
+    needs: build-mac
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: find artifacts -type f
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.dmg
+            artifacts/**/*.zip
+            artifacts/**/latest-mac.yml
+          draft: true
+          generate_release_notes: true
