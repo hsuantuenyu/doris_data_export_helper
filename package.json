@@ -84,8 +84,7 @@
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "entitlements": null,
-      "entitlementsInherit": null,
-      "skipBinaries": false
+      "entitlementsInherit": null
     },
     "linux": {
       "target": [
