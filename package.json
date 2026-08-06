@@ -79,7 +79,13 @@
         }
       ],
       "artifactName": "${productName}-${version}-${arch}.${ext}",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "sign": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "entitlements": null,
+      "entitlementsInherit": null,
+      "skipBinaries": false
     },
     "linux": {
       "target": [
