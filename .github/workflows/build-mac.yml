@@ -67,8 +67,8 @@ jobs:
           echo "Found app directory: $APP_DIR"
           
           # 获取不带路径的 app 名称
-          APP_NAME=$(basename "$APP_DIR" .app)
-          echo "App name: $APP_NAME"
+          ORIGINAL_NAME=$(basename "$APP_DIR" .app)
+          echo "Original app name: $ORIGINAL_NAME"
           
           # 移除隔离属性（防止 macOS 提示"已损坏，无法打开"）
           xattr -r -d com.apple.quarantine "$APP_DIR" 2>/dev/null || true
@@ -81,28 +81,47 @@ jobs:
           # 验证签名
           codesign --verify --deep --strict "$APP_DIR" && echo "Codesign verification passed" || echo "Codesign verification failed"
           
-          # 保存原文件名的 zip 和 dmg（由 electron-builder 生成）
-          # 查找现有的 zip 和 dmg 文件名
+          # 查找并清理旧产物
           OLD_ZIP=$(ls ./*.zip 2>/dev/null | head -1)
           OLD_DMG=$(ls ./*.dmg 2>/dev/null | head -1)
           echo "Old ZIP: $OLD_ZIP"
           echo "Old DMG: $OLD_DMG"
-          
-          # 清理旧产物
           rm -f ./*.zip ./*.dmg
           
-          # 重新生成 zip 包
-          NEW_ZIP="${APP_NAME}-${{ matrix.arch }}.zip"
-          ditto -c -k --sequesterRsrc "${APP_NAME}.app" "$NEW_ZIP"
-          echo "Created ZIP: $NEW_ZIP"
+          # 将 .app 重命名为 ASCII 名称，避免 ditto/hdiutil 处理中文路径失败
+          SAFE_APP="__app_temp__.app"
+          SAFE_APP_PATH="$(pwd)/${SAFE_APP}"
+          ORIGINAL_APP_PATH="$(pwd)/$(basename "$APP_DIR")"
           
-          # 重新生成 dmg
-          NEW_DMG="${APP_NAME}-${{ matrix.arch }}.dmg"
-          hdiutil create -volname "${APP_NAME}" -srcfolder "${APP_NAME}.app" -ov -format UDZO "$NEW_DMG"
-          echo "Created DMG: $NEW_DMG"
+          # 使用 mv 重命名
+          mv "$APP_DIR" "$SAFE_APP"
+          echo "Renamed to: $SAFE_APP"
+          echo "Files after rename:"
+          ls -la
           
-          # 清理 .app 目录
-          rm -rf "${APP_NAME}.app"
+          # 重新生成 zip 包（使用安全路径）
+          NEW_ZIP="Doris-Export-Helper-${{ matrix.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$SAFE_APP_PATH" "$(pwd)/$NEW_ZIP"
+          if [ -f "$NEW_ZIP" ]; then
+            echo "Created ZIP: $NEW_ZIP ($(du -h "$NEW_ZIP" | cut -f1))"
+          else
+            echo "Error: Failed to create ZIP"
+            ls -la
+            exit 1
+          fi
+          
+          # 重新生成 dmg（使用安全路径）
+          NEW_DMG="Doris-Export-Helper-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "Doris Export Helper" -srcfolder "$SAFE_APP_PATH" -ov -format UDZO "$(pwd)/$NEW_DMG"
+          if [ -f "$NEW_DMG" ]; then
+            echo "Created DMG: $NEW_DMG ($(du -h "$NEW_DMG" | cut -f1))"
+          else
+            echo "Warning: Failed to create DMG, but ZIP is ready"
+          fi
+          
+          # 恢复原始名称并清理
+          mv "$SAFE_APP" "$(basename "$APP_DIR")"
+          rm -rf "$(basename "$APP_DIR")"
           
           cd ..
           echo "Post-processing completed successfully"
