@@ -691,7 +691,6 @@ async function injectCredentialCapture() {
 
 async function checkCapturedCredentials() {
   if (!currentSiteKey) {
-    console.log('[checkCapturedCredentials] currentSiteKey is empty');
     return;
   }
   try {
@@ -713,11 +712,8 @@ async function checkCapturedCredentials() {
       `);
       if (storedCred && storedCred.username) {
         captured = storedCred;
-        console.log('[checkCapturedCredentials] restored from sessionStorage');
       }
     }
-
-    console.log('[checkCapturedCredentials] captured:', captured);
     if (captured && captured.username) {
       // 检查是否已存在相同凭证
       const existing = await window.electronAPI.getCredentials({ siteKey: currentSiteKey });
@@ -730,12 +726,11 @@ async function checkCapturedCredentials() {
         return;
       }
       // 默认记住账号：直接保存，不再提示
-      const saveResult = await window.electronAPI.saveCredentials({
+      await window.electronAPI.saveCredentials({
         siteKey: currentSiteKey,
         username: captured.username,
         password: captured.password || '',
       });
-      console.log('[checkCapturedCredentials] saveResult:', saveResult);
       rememberCheck.checked = true;
       setStatus(tr('msgCredSaved'), 'success');
       await webview.executeJavaScript(`
@@ -744,7 +739,7 @@ async function checkCapturedCredentials() {
       `);
     }
   } catch (e) {
-    console.log('[checkCapturedCredentials] error:', e);
+    // 静默忽略
   }
 }
 
@@ -935,14 +930,67 @@ async function injectJsonCapture() {
 
       function getActiveTabTitle() {
         try {
-          var title = document.title || '';
+          // 第一优先级：K-Tab 组件精确提取
+          var kTabActive = document.querySelector('.k-tab.k-active, .k-tabs-item.k-active');
+          if (kTabActive) {
+            var kTabSpan = kTabActive.querySelector('span[title]');
+            if (kTabSpan) {
+              var kTabName = (kTabSpan.getAttribute('title') || '').trim();
+              if (kTabName && kTabName.length > 0 && kTabName.length < 100) {
+                console.log('[getActiveTabTitle] K-Tab提取: ' + kTabName);
+                return kTabName;
+              }
+            }
+            var kTabText = (kTabActive.textContent || '').trim();
+            if (kTabText) {
+              kTabText = kTabText.replace(/ksicon-\S+/g, '').replace(/\s+/g, ' ').trim();
+              if (kTabText && kTabText.length > 0 && kTabText.length < 100 && !kTabText.startsWith('/')) {
+                console.log('[getActiveTabTitle] K-Tab文本回退: ' + kTabText);
+                return kTabText;
+              }
+            }
+          }
+          // 第二优先级：遍历所有 .k-tab 找激活的
+          var allKTabs = document.querySelectorAll('.k-tab, .k-tabs-item');
+          for (var idx = 0; idx < allKTabs.length; idx++) {
+            var tab = allKTabs[idx];
+            var isActive = tab.classList.contains('k-active') || tab.classList.contains('active');
+            var hasActiveChild = tab.querySelector('.k-active, .active');
+            if (isActive || hasActiveChild) {
+              var spanWithTitle = tab.querySelector('span[title]');
+              if (spanWithTitle) {
+                var activeName = (spanWithTitle.getAttribute('title') || '').trim();
+                if (activeName && activeName.length > 0 && activeName.length < 100) {
+                  console.log('[getActiveTabTitle] 遍历找到激活Tab[' + idx + ']: ' + activeName);
+                  return activeName;
+                }
+              }
+            }
+          }
+          // 第三优先级：通过关闭按钮定位 K-Tab
+          var closeBtn = document.querySelector('.k-tab.k-active .deleteTabs-icon, .k-tabs-item.k-active .deleteTabs-icon');
+          if (closeBtn) {
+            var tabEl = closeBtn.closest('.k-tab, .k-tabs-item');
+            if (tabEl) {
+              var spanWithTitle = tabEl.querySelector('span[title]');
+              if (spanWithTitle) {
+                var name = (spanWithTitle.getAttribute('title') || '').trim();
+                if (name && name.length > 0 && name.length < 100) {
+                  console.log('[getActiveTabTitle] 关闭按钮路径: ' + name);
+                  return name;
+                }
+              }
+            }
+          }
+          // 第四优先级：通用选择器（不含 .router-link-active，会匹配导航）
           var selectors = [
-            '.k-tab.k-active',
-            '.k-tab.active',
+            '.flow-tabs-item.k-active',
+            '.flow-tabs-item.active',
+            '.k-tabs-item.active',
             '.ant-tabs-tab-active', '.el-tabs__item.is-active', '.ivu-tabs-tab-active',
             '.nav-tabs li.active a', '.tab-content .tab-pane.active .panel-title',
             '[role="tab"][aria-selected="true"]', '.tabs .tab.active', '.tab-item.active',
-            '.v-tab--active', '.router-link-active', '.active .tab-label', '.active .nav-label',
+            '.v-tab--active', '.active .tab-label', '.active .nav-label',
             '.cdc-tabs .tab-item.active', '.tabs-nav li.active a', '.tab-nav .active'
           ];
           for (var i = 0; i < selectors.length; i++) {
@@ -951,33 +999,48 @@ async function injectJsonCapture() {
               var titleSpan = el.querySelector('span[title]');
               if (titleSpan) {
                 var t = (titleSpan.getAttribute('title') || '').trim();
-                if (t && t.length > 0 && t.length < 100) return t;
+                if (t && t.length > 0 && t.length < 100 && !t.startsWith('/')) {
+                  console.log('[getActiveTabTitle] 通用[' + i + ']: ' + t);
+                  return t;
+                }
               }
               var text = (el.textContent || el.innerText || '').trim();
-              if (text && text.length > 0 && text.length < 100) return text;
+              if (text && text.length > 0 && text.length < 100 && !text.startsWith('/')) {
+                console.log('[getActiveTabTitle] 通用文本[' + i + ']: ' + text);
+                return text;
+              }
             }
           }
-          // 尝试查找带关闭按钮的Tab
-          var closeBtns = document.querySelectorAll('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, [class*="close"]');
+          // 第五优先级：通过关闭按钮查找
+          var closeBtns = document.querySelectorAll('.deleteTabs-icon, .anticon-close, .el-icon-close, [class*="guanbi"]');
           for (var j = 0; j < closeBtns.length; j++) {
-            var tabEl = closeBtns[j].closest('.k-tab, .ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
-            if (tabEl) {
-              var titleSpan2 = tabEl.querySelector('span[title]');
-              if (titleSpan2) {
-                var t3 = (titleSpan2.getAttribute('title') || '').trim();
-                if (t3 && t3.length > 0 && t3.length < 100) return t3;
+            var tabEl2 = closeBtns[j].closest('.k-tab, .ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item');
+            if (tabEl2) {
+              var titleSpan3 = tabEl2.querySelector('span[title]');
+              var tabText = '';
+              if (titleSpan3) {
+                tabText = (titleSpan3.getAttribute('title') || '').trim();
               }
-              var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
-              if (tabText && tabText.length > 0 && tabText.length < 100) {
-                if (tabEl.classList.contains('active') || tabEl.classList.contains('k-active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
+              if (!tabText) {
+                tabText = (tabEl2.textContent || '').trim();
+                tabText = tabText.replace(/ksicon-\S+/g, '').trim();
+              }
+              if (tabText && tabText.length > 0 && tabText.length < 100 && !tabText.startsWith('/')) {
+                if (tabEl2.classList.contains('active') || tabEl2.classList.contains('k-active') || tabEl2.getAttribute('aria-selected') === 'true') {
+                  console.log('[getActiveTabTitle] 关闭按钮路径2: ' + tabText);
                   return tabText;
                 }
               }
             }
           }
+          // 最后回退
           var hash = window.location.hash;
-          if (hash && hash.length > 1 && hash.length < 50) return hash.substring(1);
-          return title;
+          if (hash && hash.length > 1 && hash.length < 50) {
+            console.log('[getActiveTabTitle] hash回退: ' + hash.substring(1));
+            return hash.substring(1);
+          }
+          console.log('[getActiveTabTitle] document.title回退: ' + (document.title || ''));
+          return document.title || '';
         } catch(e) { return document.title || ''; }
       }
 
@@ -1840,6 +1903,8 @@ async function scanAllSources(currentTabTitle) {
     // 允许轻量数据（data为null但有缓存的headers）
     if (!resp.data && (!resp.headers || resp.headers.length === 0)) continue;
     if ((resp.timestamp || 0) <= now - expireMs) continue;
+    // 调试日志：显示每条数据的 pageTitle
+    console.log('[scanAllSources] 数据源[' + i + '] pageTitle="' + (resp.pageTitle || '') + '" url=' + (resp.url || '').substring(0, 80));
     if (currentTabTitle) {
       const pt = (resp.pageTitle || '').trim().toLowerCase();
       const ct = currentTabTitle.trim().toLowerCase();
@@ -2284,6 +2349,7 @@ async function showExportModal() {
   // 获取当前活动Tab页标题，以及从 getSearchDeatil 获取的Tab配置映射
   let currentTabTitle = '';
   let tabConfigMap = {};
+  let queryClickHistory = [];
   try {
     const tabInfo = await webview.executeJavaScript(`
       (function() {
@@ -2293,12 +2359,22 @@ async function showExportModal() {
         }
         return {
           currentTab: title,
-          knownTabs: window.__tabConfigMap || {}
+          knownTabs: window.__tabConfigMap || {},
+          clickHistory: window.__queryButtonClickHistory || []
         };
       })()
     `);
     currentTabTitle = (tabInfo && tabInfo.currentTab) || '';
     tabConfigMap = (tabInfo && tabInfo.knownTabs) || {};
+    queryClickHistory = (tabInfo && tabInfo.clickHistory) || [];
+    console.log('%c[导出] 当前激活K-Tab: ' + currentTabTitle + ' | 已知Tab数: ' + Object.keys(tabConfigMap).length + ' | 运行按钮点击历史: ' + queryClickHistory.length + ' 次',
+      'color: #fff; background: #ff9800; padding: 2px 6px; border-radius: 3px;');
+    if (queryClickHistory.length > 0) {
+      console.log('%c[导出] 最近的运行按钮点击记录:', 'color: #ff9800; font-weight: bold;');
+      queryClickHistory.slice(-5).forEach((h, i) => {
+        console.log('  ' + (i + 1) + '. K-Tab: ' + (h.tabTitle || '(未知)') + ' | 按钮: ' + h.buttonText + ' | 时间: ' + h.clickTime);
+      });
+    }
   } catch (_) {}
 
   // 1. 扫描所有数据源（按当前Tab页过滤）
@@ -2604,16 +2680,14 @@ function renderModal(sources) {
     header.appendChild(title);
     item.appendChild(header);
 
-    // Tab页名称（如果存在）
+    // Tab页名称（直接显示，便于区分不同查询页的数据）
     if (src.pageTitle && src.pageTitle.trim()) {
       const pageTitle = document.createElement('div');
       pageTitle.className = 'modal-item-pagetitle';
-      let prefix = '';
       if (src.isCurrentTab) {
-        prefix = '✓ 当前Tab: ';
         pageTitle.classList.add('current-tab');
       }
-      pageTitle.textContent = prefix + src.pageTitle;
+      pageTitle.textContent = src.pageTitle.trim();
       item.appendChild(pageTitle);
     }
 

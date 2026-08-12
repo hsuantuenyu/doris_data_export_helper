@@ -143,14 +143,73 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
 
   function getActiveTabTitle() {
     try {
-      var title = document.title || '';
-      // 尝试从常见Tab组件获取当前激活Tab标签文本
+      // ========== 第一优先级：K-Tab 组件精确提取 ==========
+      // CDC 平台实际 DOM: <div class="k-tab k-active"><a><span class="f-tab-content">
+      //   <i class="ksfont tab-icon ksicon-undefined"></i>
+      //   <span title="prov_association_detail">prov_association_detail</span>
+      //   <i class="deleteTabs-icon ksicon-guanbi ksfont"></i></span></a></div>
+      var kTabActive = document.querySelector('.k-tab.k-active, .k-tabs-item.k-active');
+      if (kTabActive) {
+        console.log('[getActiveTabTitle] 找到 .k-tab.k-active 元素');
+        // 在激活的 Tab 内查找带 title 属性的 span
+        var kTabSpan = kTabActive.querySelector('span[title]');
+        if (kTabSpan) {
+          var kTabName = (kTabSpan.getAttribute('title') || '').trim();
+          if (kTabName && kTabName.length > 0 && kTabName.length < 100) {
+            console.log('[getActiveTabTitle] K-Tab span[title]提取: ' + kTabName);
+            return kTabName;
+          }
+        }
+        // 回退：直接取文本，过滤掉图标类名
+        var kTabText = (kTabActive.textContent || '').trim();
+        if (kTabText) {
+          kTabText = kTabText.replace(/ksicon-\S+/g, '').replace(/\s+/g, ' ').trim();
+          if (kTabText && kTabText.length > 0 && kTabText.length < 100 && !kTabText.startsWith('/')) {
+            console.log('[getActiveTabTitle] K-Tab文本回退: ' + kTabText);
+            return kTabText;
+          }
+        }
+      }
+
+      // ========== 第二优先级：遍历所有 .k-tab 找激活的 ==========
+      var allKTabs = document.querySelectorAll('.k-tab, .k-tabs-item');
+      console.log('[getActiveTabTitle] 共有 .k-tab 元素数量: ' + allKTabs.length);
+      for (var idx = 0; idx < allKTabs.length; idx++) {
+        var tab = allKTabs[idx];
+        var isActive = tab.classList.contains('k-active') || tab.classList.contains('active');
+        var hasActiveChild = tab.querySelector('.k-active, .active');
+        if (isActive || hasActiveChild) {
+          var spanWithTitle2 = tab.querySelector('span[title]');
+          if (spanWithTitle2) {
+            var activeName = (spanWithTitle2.getAttribute('title') || '').trim();
+            if (activeName && activeName.length > 0 && activeName.length < 100) {
+              console.log('[getActiveTabTitle] 遍历找到激活Tab[' + idx + ']: ' + activeName);
+              return activeName;
+            }
+          }
+        }
+      }
+
+      // ========== 第三优先级：通过关闭按钮定位 K-Tab ==========
+      var closeBtn = document.querySelector('.k-tab.k-active .deleteTabs-icon, .k-tabs-item.k-active .deleteTabs-icon');
+      if (closeBtn) {
+        var tabEl = closeBtn.closest('.k-tab, .k-tabs-item');
+        if (tabEl) {
+          var spanWithTitle = tabEl.querySelector('span[title]');
+          if (spanWithTitle) {
+            var name = (spanWithTitle.getAttribute('title') || '').trim();
+            if (name && name.length > 0 && name.length < 100) {
+              console.log('[getActiveTabTitle] 关闭按钮路径提取: ' + name);
+              return name;
+            }
+          }
+        }
+      }
+
+      // ========== 第三优先级：通用 Tab 组件选择器 ==========
       var selectors = [
         '.flow-tabs-item.k-active',
         '.flow-tabs-item.active',
-        '.k-tab.k-active',
-        '.k-tab.active',
-        '.k-tabs-item.k-active',
         '.k-tabs-item.active',
         '.ant-tabs-tab-active',
         '.el-tabs__item.is-active',
@@ -161,7 +220,6 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         '.tabs .tab.active',
         '.tab-item.active',
         '.v-tab--active',
-        '.router-link-active',
         '.active .tab-label',
         '.active .nav-label',
         '.cdc-tabs .tab-item.active',
@@ -174,34 +232,53 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
           var titleSpan = el.querySelector('span[title]');
           if (titleSpan) {
             var t = (titleSpan.getAttribute('title') || '').trim();
-            if (t && t.length > 0 && t.length < 100) return t;
+            if (t && t.length > 0 && t.length < 100 && !t.startsWith('/')) {
+              console.log('[getActiveTabTitle] 通用选择器[' + i + ']: ' + selectors[i] + ' -> ' + t);
+              return t;
+            }
           }
           var text = (el.textContent || el.innerText || '').trim();
-          if (text && text.length > 0 && text.length < 100) {
+          if (text && text.length > 0 && text.length < 100 && !text.startsWith('/')) {
+            console.log('[getActiveTabTitle] 通用选择器[' + i + ']文本: ' + selectors[i] + ' -> ' + text);
             return text;
           }
         }
       }
-      // 尝试查找带关闭按钮的Tab（常见于编辑器多Tab场景）
-      var closeBtns = document.querySelectorAll('.anticon-close, .el-icon-close, .ivu-icon-ios-close, .tab-close, .close-icon, [class*="close"]');
+
+      // ========== 第四优先级：通过关闭按钮查找 ==========
+      var closeBtns = document.querySelectorAll('.deleteTabs-icon, .anticon-close, .el-icon-close, [class*="guanbi"]');
       for (var j = 0; j < closeBtns.length; j++) {
-        var tabEl = closeBtns[j].closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item, .flow-tabs-item, .k-tab, .k-tabs-item');
-        if (tabEl) {
-          var tabText = (tabEl.textContent || tabEl.innerText || '').trim();
-          if (tabText && tabText.length > 0 && tabText.length < 100) {
-            // 如果这个Tab是激活状态，返回它的文本
-            if (tabEl.classList.contains('active') || tabEl.classList.contains('ant-tabs-tab-active') || tabEl.getAttribute('aria-selected') === 'true') {
+        var tabEl2 = closeBtns[j].closest('.ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, .tab-item, [role="tab"], .tab, .tabs-item, .flow-tabs-item, .k-tab, .k-tabs-item');
+        if (tabEl2) {
+          var titleSpan3 = tabEl2.querySelector('span[title]');
+          var tabText = '';
+          if (titleSpan3) {
+            tabText = (titleSpan3.getAttribute('title') || '').trim();
+          }
+          if (!tabText) {
+            tabText = (tabEl2.textContent || '').trim();
+            tabText = tabText.replace(/ksicon-\S+/g, '').trim();
+          }
+          if (tabText && tabText.length > 0 && tabText.length < 100 && !tabText.startsWith('/')) {
+            if (tabEl2.classList.contains('active') ||
+                tabEl2.classList.contains('k-active') ||
+                tabEl2.classList.contains('ant-tabs-tab-active') ||
+                tabEl2.getAttribute('aria-selected') === 'true') {
+              console.log('[getActiveTabTitle] 关闭按钮路径2: ' + tabText);
               return tabText;
             }
           }
         }
       }
-      // 尝试从URL hash或路径提取
+
+      // ========== 最后回退 ==========
       var hash = window.location.hash;
       if (hash && hash.length > 1 && hash.length < 50) {
+        console.log('[getActiveTabTitle] hash回退: ' + hash.substring(1));
         return hash.substring(1);
       }
-      return title;
+      console.log('[getActiveTabTitle] document.title回退: ' + (document.title || ''));
+      return document.title || '';
     } catch(e) {
       return document.title || '';
     }
@@ -260,14 +337,33 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       // 大数据需要保存到文件缓存（不仅是 isHuge，isBig 且超过 FILE_CACHE_ROW_THRESHOLD 也需要）
       const needFileCache = isHuge || (isBig && rowCount > FILE_CACHE_ROW_THRESHOLD);
       const tabTitle = requestTabTitle || getActiveTabTitle();
+      // 如果 tabTitle 看起来像 URL 路径（以 / 开头），重新尝试获取
+      let finalTabTitle = tabTitle;
+      if (finalTabTitle && finalTabTitle.startsWith('/')) {
+        const retryTab = getActiveTabTitle();
+        if (retryTab && !retryTab.startsWith('/')) {
+          console.log('[pushResponse] tabTitle从URL路径修正为: ' + retryTab);
+          finalTabTitle = retryTab;
+        } else {
+          console.log('[pushResponse] tabTitle仍为URL路径: ' + finalTabTitle + '，标记为待修正');
+        }
+      }
       const entryTimestamp = requestStartTime || Date.now();
+
+      // 记录 JSON 响应捕获日志，明确显示对应的 K-Tab
+      if (rowCount > 0) {
+        const timeStr = new Date(entryTimestamp).toLocaleTimeString();
+        console.log('%c[JSON捕获] K-Tab: ' + (finalTabTitle || '(未知)') +
+          ' | 行数: ' + rowCount + ' | 大小: ' + ((size || 0) / 1024).toFixed(1) + 'KB | 时间: ' + timeStr,
+          'color: #fff; background: #4caf50; padding: 2px 6px; border-radius: 3px;');
+      }
 
       // 当新数据到达当前 Tab 时，先清理该 Tab 的旧数据
       // 这是比 clearOnQueryClick 更可靠的清理方式，因为不依赖按钮点击事件检测
       // 只清理比当前数据更旧的条目，防止旧轮询结果覆盖新数据
-      if (tabTitle && rowCount > 0) {
+      if (finalTabTitle && rowCount > 0) {
         try {
-          const lowerTitle = tabTitle.toLowerCase();
+          const lowerTitle = finalTabTitle.toLowerCase();
           const now = entryTimestamp;
           for (let i = window.__capturedJsonResponses.length - 1; i >= 0; i--) {
             const r = window.__capturedJsonResponses[i];
@@ -281,14 +377,14 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
           }
           if (ipcRenderer) {
             try {
-              ipcRenderer.send('clear-tab-json', tabTitle);
+              ipcRenderer.send('clear-tab-json', finalTabTitle);
             } catch (_) {}
           }
         } catch (_) {}
       }
 
-      if (tabTitle && window.__tabConfigMap[tabTitle] && rowCount > 0 && !/getSearchDeatil/i.test(url || '')) {
-        window.__tabResultMap[tabTitle] = {
+      if (finalTabTitle && window.__tabConfigMap[finalTabTitle] && rowCount > 0 && !/getSearchDeatil/i.test(url || '')) {
+        window.__tabResultMap[finalTabTitle] = {
           url: url || 'unknown',
           timestamp: entryTimestamp,
           rowCount: rowCount,
@@ -305,7 +401,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
             size: size || 0,
             data: data,
             rowCount: rowCount,
-            pageTitle: tabTitle
+            pageTitle: finalTabTitle
           };
           ipcRenderer.invoke('save-json-file', entryForFile).then(function(r) {
             if (r && r.success && r.info) {
@@ -317,7 +413,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
                 rowCount: rowCount,
                 isBig: true,
                 isHuge: true,
-                pageTitle: tabTitle,
+                pageTitle: finalTabTitle,
                 isFileCached: true,
                 filePath: r.info.filePath,
                 requestStartTime: requestStartTime
@@ -350,7 +446,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         rowCount: rowCount,
         isBig: isBig,
         isHuge: isHuge,
-        pageTitle: tabTitle,
+        pageTitle: finalTabTitle,
         requestStartTime: requestStartTime
       };
 
@@ -359,8 +455,6 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
           ipcRenderer.send('json-captured', entry);
         } catch (_) {}
       }
-
-      // 发送到主进程后，webview 中只保留小数据的完整对象（用于快速预览）
       // 超过 WEBVIEW_DATA_KEEP_LIMIT 行的数据全部置空，避免 webview 内存累积
       if (rowCount > WEBVIEW_DATA_KEEP_LIMIT) {
         entry.data = null;
@@ -455,18 +549,18 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     const xhr = new OriginalXHR();
     const originalOpen = xhr.open;
     let requestUrl = '';
-    let requestTabTitle = '';
     let requestStartTime = 0;
 
     xhr.open = function(method, url, ...rest) {
       requestUrl = url;
-      requestTabTitle = getActiveTabTitle();
       requestStartTime = Date.now();
       return originalOpen.apply(xhr, [method, url, ...rest]);
     };
 
     xhr.addEventListener('load', function() {
       try {
+        // 关键：在响应返回时重新获取 tab 名（此时 DOM 已完全渲染）
+        const responseTabTitle = getActiveTabTitle();
         let data = null;
         let size = 0;
 
@@ -504,7 +598,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
                     } catch (_) {}
                   }
 
-                  pushResponse(requestUrl, parsedData, respSize, requestTabTitle, requestStartTime);
+                  pushResponse(requestUrl, parsedData, respSize, responseTabTitle, requestStartTime);
                 } catch (_) {}
               });
               return;
@@ -517,7 +611,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
             const rowCount = estimateRowCount(data);
             const isBig = size > BIG_RESPONSE_THRESHOLD || rowCount > BIG_ROW_THRESHOLD;
 
-            pushResponse(requestUrl, data, size, requestTabTitle, requestStartTime);
+            pushResponse(requestUrl, data, size, responseTabTitle, requestStartTime);
 
             if (rowCount > RENDER_ROW_LIMIT) {
               try {
@@ -553,10 +647,11 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     const url = args[0];
     const urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : 'fetch');
     currentFetchUrl = urlStr;
-    const requestTabTitle = getActiveTabTitle();
     const requestStartTime = Date.now();
     const response = await originalFetch.apply(this, args);
-    fetchRequestInfo.set(response, { tabTitle: requestTabTitle, startTime: requestStartTime, url: urlStr });
+    // 关键：在响应返回时重新获取 tab 名（此时 DOM 已完全渲染）
+    const responseTabTitle = getActiveTabTitle();
+    fetchRequestInfo.set(response, { tabTitle: responseTabTitle, startTime: requestStartTime, url: urlStr });
 
     if (isCaptchaUrl(urlStr) && response.clone) {
       try {
@@ -642,18 +737,20 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
 
         // 大数据（超过阈值）：直接丢弃文本，不解析，通知主进程重新请求保存为文件
         if (size > HUGE_RESPONSE_THRESHOLD) {
+          // 在此时重新获取 tab 名（响应返回时 DOM 已渲染）
+          const currentTabTitle = getActiveTabTitle();
           if (ipcRenderer) {
             ipcRenderer.send('re-fetch-and-save', {
               url: url,
               method: 'GET',
-              pageTitle: requestTabTitle,
+              pageTitle: currentTabTitle || requestTabTitle,
               timestamp: requestStartTime
             });
           }
           return {
             __isFileProxy: true,
             __url: url,
-            __tabTitle: requestTabTitle,
+            __tabTitle: currentTabTitle || requestTabTitle,
             __size: size,
             __timestamp: requestStartTime,
             status: 'success',
@@ -673,22 +770,24 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
           const approxRows = fastEstimateRowCount(data);
           const isBig = size > BIG_RESPONSE_THRESHOLD || approxRows > BIG_ROW_THRESHOLD;
           const isHuge = size > HUGE_RESPONSE_THRESHOLD || approxRows > HUGE_ROW_THRESHOLD;
+          // 在此时重新获取 tab 名（响应返回时 DOM 已渲染）
+          const currentTabTitle = getActiveTabTitle();
 
           if (isHuge) {
             setTimeout(function() {
               try {
-                pushResponse(url, data, size, requestTabTitle, requestStartTime);
+                pushResponse(url, data, size, currentTabTitle || requestTabTitle, requestStartTime);
               } catch (_) {}
             }, 50);
           } else if (isBig) {
             setTimeout(function() {
               try {
-                pushResponse(url, data, size, requestTabTitle, requestStartTime);
+                pushResponse(url, data, size, currentTabTitle || requestTabTitle, requestStartTime);
               } catch (_) {}
               try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
             }, 0);
           } else {
-            pushResponse(url, data, size, requestTabTitle, requestStartTime);
+            pushResponse(url, data, size, currentTabTitle || requestTabTitle, requestStartTime);
             if (approxRows > RENDER_ROW_LIMIT) {
               try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
             }
@@ -730,22 +829,24 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
                 const rowCount = estimateRowCount(data);
                 const isBig = size > BIG_RESPONSE_THRESHOLD || rowCount > BIG_ROW_THRESHOLD;
                 const isHuge = size > HUGE_RESPONSE_THRESHOLD || rowCount > HUGE_ROW_THRESHOLD;
+                // 在此时重新获取 tab 名（响应返回时 DOM 已渲染）
+                const currentTabTitle = getActiveTabTitle();
 
                 if (isHuge) {
                   setTimeout(function() {
                     try {
-                      pushResponse(url, data, size, requestTabTitle, requestStartTime);
+                      pushResponse(url, data, size, currentTabTitle || requestTabTitle, requestStartTime);
                     } catch (_) {}
                   }, 50);
                 } else if (isBig) {
                   setTimeout(function() {
                     try {
-                      pushResponse(url, data, size, requestTabTitle, requestStartTime);
+                      pushResponse(url, data, size, currentTabTitle || requestTabTitle, requestStartTime);
                     } catch (_) {}
                     try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
                   }, 0);
                 } else {
-                  pushResponse(url, data, size, requestTabTitle, requestStartTime);
+                  pushResponse(url, data, size, currentTabTitle || requestTabTitle, requestStartTime);
                   if (rowCount > RENDER_ROW_LIMIT) {
                     try { truncateDataForRender(data, RENDER_ROW_LIMIT); } catch (_) {}
                   }
@@ -770,10 +871,29 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
 
   function clearOnQueryClick(e) {
     try {
-      const btn = e.target && e.target.closest && e.target.closest('button, input[type="submit"], input[type="button"], [role="button"], .btn, .ant-btn, .el-button');
+      const btn = e.target && e.target.closest && e.target.closest('button, input[type="submit"], input[type="button"], [role="button"], .btn, .ant-btn, .el-button, .k-btn, .ksfont');
       if (!btn) return;
       if (isQueryButton(btn)) {
         const activeTab = getActiveTabTitle();
+        // 明确记录点击了哪个 K-Tab 的运行按钮，便于调试和追踪
+        const btnText = (btn.textContent || btn.innerText || '').trim();
+        const clickTime = new Date().toLocaleTimeString();
+        console.log('%c[运行按钮点击] K-Tab: ' + activeTab + ' | 按钮: ' + btnText + ' | 时间: ' + clickTime,
+          'color: #fff; background: #0091ea; padding: 2px 6px; border-radius: 3px;');
+        // 同时存储到 window 供后续查询
+        try {
+          if (!window.__queryButtonClickHistory) window.__queryButtonClickHistory = [];
+          window.__queryButtonClickHistory.push({
+            tabTitle: activeTab || '',
+            buttonText: btnText,
+            timestamp: Date.now(),
+            clickTime: clickTime
+          });
+          // 保留最近 50 次记录
+          if (window.__queryButtonClickHistory.length > 50) {
+            window.__queryButtonClickHistory.shift();
+          }
+        } catch (_) {}
         // 彻底清理当前 Tab 的所有旧数据（包括 webview 和主进程）
         if (activeTab) {
           if (typeof window.__clearCapturedJsonByTab === 'function') {
