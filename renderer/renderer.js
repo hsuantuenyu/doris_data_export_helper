@@ -427,7 +427,7 @@ webview.addEventListener('console-message', (e) => {
 // 监听 webview 渲染进程崩溃，大数据场景下常见
 webview.addEventListener('crashed', (e) => {
   console.error('[webview] renderer process crashed:', e);
-  setStatus('页面渲染进程已崩溃（数据量过大导致内存耗尽），正在自动重新加载...', 'error');
+  setStatus('页面渲染进程已崩溃（内存耗尽），数据已缓存到文件，仍可点击导出。正在重新加载页面...', 'error');
   // 崩溃后自动重新加载 webview，避免用户手动操作
   setTimeout(() => {
     try {
@@ -2353,10 +2353,54 @@ async function showExportModal() {
   try {
     const tabInfo = await webview.executeJavaScript(`
       (function() {
-        var title = '';
-        if (typeof window.__getActiveTabTitle === 'function') {
-          title = window.__getActiveTabTitle();
+        // 内联 getActiveTabTitle，确保在任何上下文都能正确获取
+        function getActiveTabTitle() {
+          try {
+            var kTabActive = document.querySelector('.k-tab.k-active, .k-tabs-item.k-active');
+            if (kTabActive) {
+              var kTabSpan = kTabActive.querySelector('span[title]');
+              if (kTabSpan) {
+                var kTabName = (kTabSpan.getAttribute('title') || '').trim();
+                if (kTabName && kTabName.length > 0 && kTabName.length < 100) return kTabName;
+              }
+              var kTabText = (kTabActive.textContent || '').trim();
+              if (kTabText) {
+                kTabText = kTabText.replace(/ksicon-\\S+/g, '').replace(/\\s+/g, ' ').trim();
+                if (kTabText && kTabText.length > 0 && kTabText.length < 100 && !kTabText.startsWith('/')) return kTabText;
+              }
+            }
+            var allKTabs = document.querySelectorAll('.k-tab, .k-tabs-item');
+            for (var idx = 0; idx < allKTabs.length; idx++) {
+              var tab = allKTabs[idx];
+              var isActive = tab.classList.contains('k-active') || tab.classList.contains('active');
+              var hasActiveChild = tab.querySelector('.k-active, .active');
+              if (isActive || hasActiveChild) {
+                var spanWithTitle = tab.querySelector('span[title]');
+                if (spanWithTitle) {
+                  var activeName = (spanWithTitle.getAttribute('title') || '').trim();
+                  if (activeName && activeName.length > 0 && activeName.length < 100) return activeName;
+                }
+              }
+            }
+            var selectors = ['.flow-tabs-item.k-active','.flow-tabs-item.active','.k-tabs-item.active','.ant-tabs-tab-active','.el-tabs__item.is-active','.ivu-tabs-tab-active','.nav-tabs li.active a','[role="tab"][aria-selected="true"]','.tabs .tab.active','.tab-item.active','.v-tab--active'];
+            for (var i = 0; i < selectors.length; i++) {
+              var el = document.querySelector(selectors[i]);
+              if (el) {
+                var titleSpan = el.querySelector('span[title]');
+                if (titleSpan) {
+                  var t = (titleSpan.getAttribute('title') || '').trim();
+                  if (t && t.length > 0 && t.length < 100 && !t.startsWith('/')) return t;
+                }
+                var text = (el.textContent || '').trim();
+                if (text && text.length > 0 && text.length < 100 && !text.startsWith('/')) return text;
+              }
+            }
+            var hash = window.location.hash;
+            if (hash && hash.length > 1 && hash.length < 50) return hash.substring(1);
+            return document.title || '';
+          } catch(e) { return ''; }
         }
+        var title = getActiveTabTitle();
         return {
           currentTab: title,
           knownTabs: window.__tabConfigMap || {},
@@ -2514,16 +2558,11 @@ async function showExportModal() {
   if (currentTabTitle) {
     let currentTabSources = capturedSources.filter(s => s.isCurrentTab);
 
-    // 如果是已知Tab（从 getSearchDeatil 获取过配置），优先使用匹配当前Tab的JSON数据
-    if (isKnownTab) {
-      const matchedJson = currentTabSources.filter(s => s.type === 'json');
-      if (matchedJson.length > 0) {
-        filteredSources = matchedJson;
-      }
-      // 匹配不到时不直接报错，降级到所有数据（避免Tab标题识别差异导致的漏匹配）
-    } else if (currentTabSources.length > 0) {
+    // 只要有匹配当前Tab的数据，就只显示当前Tab的
+    if (currentTabSources.length > 0) {
       filteredSources = currentTabSources;
     }
+    // 如果没有匹配到当前Tab的数据，保留所有数据（可能Tab标题识别失败）
   }
 
   // 2. 如果只有1个数据源，直接导出

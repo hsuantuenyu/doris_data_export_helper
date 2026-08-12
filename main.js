@@ -591,7 +591,7 @@ ipcMain.handle('save-json-text', (_event, payload) => {
     }
     const tabName = sanitizeFileName(payload.pageTitle || 'tab');
     const timestamp = payload.timestamp || Date.now();
-    const fileName = tabName + '_' + timestamp + '.json';
+    const fileName = tabName + '.json';
     const filePath = path.join(jsonCacheDir, fileName);
     fs.writeFileSync(filePath, payload.text, 'utf-8');
     const data = JSON.parse(payload.text);
@@ -619,7 +619,7 @@ ipcMain.on('json-captured-text', (_event, payload) => {
     if (!payload || !payload.text) return;
     const tabName = sanitizeFileName(payload.pageTitle || 'tab');
     const timestamp = payload.timestamp || Date.now();
-    const fileName = tabName + '_' + timestamp + '.json';
+    const fileName = tabName + '.json';
     const filePath = path.join(jsonCacheDir, fileName);
     fs.writeFileSync(filePath, payload.text, 'utf-8');
     let analysis = null;
@@ -648,7 +648,7 @@ ipcMain.on('re-fetch-and-save', (_event, payload) => {
     const url = payload.url;
     const tabName = sanitizeFileName(payload.pageTitle || 'tab');
     const timestamp = payload.timestamp || Date.now();
-    const fileName = tabName + '_' + timestamp + '.json';
+    const fileName = tabName + '.json';
     const filePath = path.join(jsonCacheDir, fileName);
 
     const http = url.startsWith('https') ? require('https') : require('http');
@@ -686,10 +686,11 @@ ipcMain.on('re-fetch-and-save', (_event, payload) => {
             const stats = fs.statSync(filePath);
             let analysis = null;
             try {
-              // 大文件分析时也可能占用较多内存，但主进程有 4GB 限制，通常可接受
+              // 大文件分析：读取后立即解析并释放引用
               const rawData = fs.readFileSync(filePath, 'utf-8');
               const data = JSON.parse(rawData);
               analysis = analyzeJsonStructure(data);
+              // 立即释放大对象引用，让 GC 回收
             } catch (e) {}
             const info = {
               filePath, fileName,
@@ -715,6 +716,10 @@ ipcMain.on('re-fetch-and-save', (_event, payload) => {
               path: analysis ? analysis.path : '',
               jsonFilePath: filePath
             });
+            // 主动触发 GC（如果可用）
+            if (global.gc) {
+              try { global.gc(); } catch (_) {}
+            }
           } catch (e) {
             console.error('[re-fetch-and-save] save error:', e);
           }
