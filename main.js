@@ -126,7 +126,7 @@ function saveJsonToFile(entry) {
   try {
     const tabName = sanitizeFileName(entry.pageTitle || 'tab');
     const timestamp = entry.timestamp || Date.now();
-    const fileName = tabName + '_' + timestamp + '.json';
+    const fileName = tabName + '.json';
     const filePath = path.join(jsonCacheDir, fileName);
     fs.writeFileSync(filePath, JSON.stringify(entry.data), 'utf-8');
     const analysis = analyzeJsonStructure(entry.data);
@@ -150,9 +150,15 @@ let jsonFileCacheList = [];
 
 function pushJsonFileCache(info) {
   if (!info) return;
+  // 同 Tab 名的文件直接替换（文件名固定为 tabName.json）
+  const existingIndex = jsonFileCacheList.findIndex(f => f && f.fileName === info.fileName);
+  if (existingIndex !== -1) {
+    jsonFileCacheList[existingIndex] = info;
+    return;
+  }
   jsonFileCacheList.push(info);
-  if (jsonFileCacheList.length > 10) {
-    const removed = jsonFileCacheList.splice(0, jsonFileCacheList.length - 10);
+  if (jsonFileCacheList.length > 20) {
+    const removed = jsonFileCacheList.splice(0, jsonFileCacheList.length - 20);
     for (let i = 0; i < removed.length; i++) {
       try {
         if (removed[i] && removed[i].filePath && fs.existsSync(removed[i].filePath)) {
@@ -443,6 +449,17 @@ function clearMainCapturesByTab(tabTitle) {
       removed++;
     }
   }
+  // 清理对应的 json 缓存文件
+  const tabName = sanitizeFileName(tabTitle);
+  const cacheFilePath = path.join(jsonCacheDir, tabName + '.json');
+  try {
+    if (fs.existsSync(cacheFilePath)) {
+      fs.unlinkSync(cacheFilePath);
+    }
+  } catch (_) {}
+  // 从缓存列表中移除
+  const fileIdx = jsonFileCacheList.findIndex(f => f && f.fileName === tabName + '.json');
+  if (fileIdx !== -1) jsonFileCacheList.splice(fileIdx, 1);
   return removed;
 }
 
