@@ -8,11 +8,13 @@ const { createWorker } = require('tesseract.js');
 const packageJson = require('./package.json');
 const appVersion = packageJson.version || '1.0.0';
 
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
+// Windows 下大数据场景需要更大的 V8 堆内存，避免渲染进程崩溃
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=8192');
 app.commandLine.appendSwitch('disable-software-rasterizer');
 app.commandLine.appendSwitch('disable-gpu-watchdog');
 app.commandLine.appendSwitch('max-active-webgl-contexts', '16');
-app.commandLine.appendSwitch('renderer-process-limit', '1');
+// 移除 renderer-process-limit=1，让 Chromium 按默认策略分配渲染进程，
+// 避免 Windows 上单一渲染进程承载所有 webview 和页面导致内存瓶颈
 
 let mainWindow;
 let currentLang = 'zh';
@@ -297,7 +299,9 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webviewTag: true
+      webviewTag: true,
+      // 降低后台节流，减少大数据场景下的内存波动
+      backgroundThrottling: false
     }
   });
   mainWindow.once('ready-to-show', () => {

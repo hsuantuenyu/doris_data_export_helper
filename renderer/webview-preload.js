@@ -97,6 +97,11 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     }
 
     truncateObj(data, 0);
+    // 截断后尝试强制 GC，帮助 V8 更快回收被删除元素的内存
+    // 在 Windows 大数据场景下，及时回收对避免渲染进程崩溃至关重要
+    if (window.gc && typeof window.gc === 'function') {
+      try { window.gc(); } catch (_) {}
+    }
   }
 
   function fastEstimateRowCount(data) {
@@ -386,26 +391,35 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         } catch (_) {}
       }
 
+      // 为 IPC 创建独立对象，避免后续清理影响异步传输
+      if (ipcRenderer) {
+        try {
+          ipcRenderer.send('json-captured', {
+            url: url || 'unknown',
+            timestamp: entryTimestamp,
+            size: size || 0,
+            data: data,
+            rowCount: rowCount,
+            isBig: isBig,
+            isHuge: isHuge,
+            pageTitle: finalTabTitle,
+            requestStartTime: requestStartTime
+          });
+        } catch (_) {}
+      }
+
+      // webview 本地只保留轻量 entry，大数据直接丢弃 data 引用，避免与网站竞争内存
       const entry = {
         url: url || 'unknown',
         timestamp: entryTimestamp,
         size: size || 0,
-        data: data,
+        data: (rowCount > WEBVIEW_DATA_KEEP_LIMIT || isBig || isHuge) ? null : data,
         rowCount: rowCount,
         isBig: isBig,
         isHuge: isHuge,
         pageTitle: finalTabTitle,
         requestStartTime: requestStartTime
       };
-
-      if (ipcRenderer) {
-        try {
-          ipcRenderer.send('json-captured', entry);
-        } catch (_) {}
-      }
-      if (rowCount > WEBVIEW_DATA_KEEP_LIMIT) {
-        entry.data = null;
-      }
 
       const dedupKey = getUrlDedupKey(url);
       const existingIdx = window.__capturedJsonResponses.findIndex(function(r) {
@@ -418,6 +432,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         var newHasMoreData = newRowCount > oldRowCount;
         var oldNoData = !oldEntry || (!oldEntry.data && (!oldEntry.rowCount || oldEntry.rowCount === 0));
         if (newHasMoreData || oldNoData) {
+          if (oldEntry && oldEntry.data) oldEntry.data = null;
           window.__capturedJsonResponses[existingIdx] = entry;
         }
       } else {
