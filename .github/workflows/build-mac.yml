@@ -89,7 +89,7 @@ jobs:
           rm -f ./*.zip ./*.dmg
           
           # 将 .app 重命名为 ASCII 名称，避免 ditto/hdiutil 处理中文路径失败
-          SAFE_APP="__app_temp__.app"
+          SAFE_APP="Doris-Export-Helper.app"
           SAFE_APP_PATH="$(pwd)/${SAFE_APP}"
           ORIGINAL_APP_PATH="$(pwd)/$(basename "$APP_DIR")"
           
