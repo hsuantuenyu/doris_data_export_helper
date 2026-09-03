@@ -50,7 +50,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npx electron-builder --mac --${{ matrix.arch }}
 
-      - name: Post-process app (remove quarantine + ad-hoc sign)
+      - name: Post-process app (remove quarantine + ad-hoc sign + build DMG)
         run: |
           echo "=== Post-processing app ==="
           echo "Files in dist:"
@@ -66,62 +66,89 @@ jobs:
           fi
           echo "Found app directory: $APP_DIR"
           
-          # 获取不带路径的 app 名称
-          ORIGINAL_NAME=$(basename "$APP_DIR" .app)
-          echo "Original app name: $ORIGINAL_NAME"
-          
-          # 移除隔离属性（防止 macOS 提示"已损坏，无法打开"）
+          # 移除隔离属性
           xattr -r -d com.apple.quarantine "$APP_DIR" 2>/dev/null || true
           echo "Quarantine attribute removed"
           
-          # 执行 ad-hoc 签名，确保应用可在本机运行
+          # ad-hoc 签名
           codesign --deep --force --sign - "$APP_DIR"
           echo "Ad-hoc signing completed"
-          
-          # 验证签名
           codesign --verify --deep --strict "$APP_DIR" && echo "Codesign verification passed" || echo "Codesign verification failed"
           
-          # 查找并清理旧产物
-          OLD_ZIP=$(ls ./*.zip 2>/dev/null | head -1)
-          OLD_DMG=$(ls ./*.dmg 2>/dev/null | head -1)
-          echo "Old ZIP: $OLD_ZIP"
-          echo "Old DMG: $OLD_DMG"
+          # 清理旧产物
           rm -f ./*.zip ./*.dmg
           
-          # 将 .app 重命名为 ASCII 名称，避免 ditto/hdiutil 处理中文路径失败
+          # 重命名为 ASCII 名称
           SAFE_APP="Doris-Export-Helper.app"
           SAFE_APP_PATH="$(pwd)/${SAFE_APP}"
-          ORIGINAL_APP_PATH="$(pwd)/$(basename "$APP_DIR")"
-          
-          # 使用 mv 重命名
           mv "$APP_DIR" "$SAFE_APP"
           echo "Renamed to: $SAFE_APP"
-          echo "Files after rename:"
-          ls -la
           
-          # 重新生成 zip 包（使用安全路径）
+          # 创建 DMG 暂存目录（包含应用 + 快捷方式 + 修复脚本）
+          STAGING="dmg_staging"
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          
+          # 复制 app 到暂存目录
+          cp -R "$SAFE_APP_PATH" "$STAGING/"
+          
+          # 创建 Applications 文件夹快捷方式
+          ln -s /Applications "$STAGING/Applications"
+          
+          # 创建首次打开修复脚本（用户双击即可解除隔离）
+          cat > "$STAGING/首次打开请双击我.command" << 'SCRIPT_EOF'
+          #!/bin/bash
+          # 双击此文件可自动移除 macOS 隔离标记并启动应用
+          cd "$(dirname "$0")"
+          echo "正在移除隔离标记..."
+          xattr -cr "Doris-Export-Helper.app" 2>/dev/null
+          echo "正在启动应用..."
+          open "Doris-Export-Helper.app"
+          SCRIPT_EOF
+          chmod +x "$STAGING/首次打开请双击我.command"
+          
+          # 创建说明文件
+          cat > "$STAGING/使用说明.txt" << 'README_EOF'
+          ============================================
+            Doris 数据导出助手 - macOS 安装说明
+          ============================================
+
+          方式一（推荐）：
+            1. 双击 "首次打开请双击我.command"
+            2. 系统可能提示无法验证开发者，点击 "好"
+            3. 前往 系统设置 → 隐私与安全性 → 点击 "仍要打开"
+            4. 再次双击 "首次打开请双击我.command" 即可启动
+
+          方式二：
+            1. 将 Doris-Export-Helper.app 拖到 Applications 文件夹
+            2. 打开终端，执行：xattr -cr /Applications/Doris-Export-Helper.app
+            3. 在启动台中打开应用
+
+          方式三：
+            1. 将 Doris-Export-Helper.app 拖到 Applications 文件夹
+            2. 右键点击应用 → 选择 "打开"
+            3. 在弹窗中点击 "打开"
+          README_EOF
+          
+          # 生成 DMG（从暂存目录）
+          NEW_DMG="Doris-Export-Helper-${{ matrix.arch }}.dmg"
+          hdiutil create -volname "Doris Export Helper" -srcfolder "$STAGING" -ov -format UDZO "$(pwd)/$NEW_DMG"
+          if [ -f "$NEW_DMG" ]; then
+            echo "Created DMG: $NEW_DMG ($(du -h "$NEW_DMG" | cut -f1))"
+          else
+            echo "Error: Failed to create DMG"
+            exit 1
+          fi
+          
+          # 生成 ZIP 包
           NEW_ZIP="Doris-Export-Helper-${{ matrix.arch }}.zip"
           ditto -c -k --sequesterRsrc --keepParent "$SAFE_APP_PATH" "$(pwd)/$NEW_ZIP"
           if [ -f "$NEW_ZIP" ]; then
             echo "Created ZIP: $NEW_ZIP ($(du -h "$NEW_ZIP" | cut -f1))"
-          else
-            echo "Error: Failed to create ZIP"
-            ls -la
-            exit 1
           fi
           
-          # 重新生成 dmg（使用安全路径）
-          NEW_DMG="Doris-Export-Helper-${{ matrix.arch }}.dmg"
-          hdiutil create -volname "Doris Export Helper" -srcfolder "$SAFE_APP_PATH" -ov -format UDZO "$(pwd)/$NEW_DMG"
-          if [ -f "$NEW_DMG" ]; then
-            echo "Created DMG: $NEW_DMG ($(du -h "$NEW_DMG" | cut -f1))"
-          else
-            echo "Warning: Failed to create DMG, but ZIP is ready"
-          fi
-          
-          # 恢复原始名称并清理
-          mv "$SAFE_APP" "$(basename "$APP_DIR")"
-          rm -rf "$(basename "$APP_DIR")"
+          # 清理暂存目录和临时 app
+          rm -rf "$STAGING" "$SAFE_APP"
           
           cd ..
           echo "Post-processing completed successfully"
