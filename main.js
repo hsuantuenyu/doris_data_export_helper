@@ -1124,6 +1124,28 @@ ipcMain.handle('ocr-captcha', async (_event, base64Image) => {
 });
 
 app.on('ready', () => { buildMenu(); createWindow(); });
+
+// 监听 webview 创建，为其 session 添加验证码请求拦截
+app.on('web-contents-created', (event, contents) => {
+  // 只处理 webview 类型（type 为 'webview' 或通过 getType 判断）
+  const type = contents.getType ? contents.getType() : '';
+  if (type === 'webview' || contents.hostWebContents) {
+    try {
+      const session = contents.session;
+      if (session && session.webRequest) {
+        // 拦截 /api/code 接口请求（仅保留请求/错误监听，调试日志已禁用）
+        const filter = { urls: ['*://*/api/code*'] };
+        session.webRequest.onBeforeRequest(filter, (details, callback) => {
+          callback({ cancel: false });
+        });
+        session.webRequest.onErrorOccurred(filter, (details) => {
+          // 调试日志已禁用
+        });
+      }
+    } catch (_) {}
+  }
+});
+
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (!mainWindow) { buildMenu(); createWindow(); } });
 

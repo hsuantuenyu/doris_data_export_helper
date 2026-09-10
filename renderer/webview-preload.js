@@ -11,6 +11,241 @@
   window.__tabConfigMap = {};
   window.__tabResultMap = {};
 
+  // === 关键：在页面 JS 执行前，通过 <script> 标签将验证码拦截器注入到主世界 ===
+  // contextIsolation=yes 时，preload 对 window 的修改只在隔离世界生效，
+  // 但 <script> 标签注入的代码运行在主世界，能真正拦截页面的 XHR/fetch 请求。
+  try {
+    var mainWorldScript = `
+      (function() {
+        if (window.__mwCaptchaInstalled) return;
+        window.__mwCaptchaInstalled = true;
+        window.__mwCaptchaCode = '';
+
+        function findCaptchaInput() {
+          var inp = document.querySelector('input[placeholder*="请输入验证码"]');
+          if (!inp) {
+            var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+            for (var i = 0; i < inputs.length; i++) {
+              var ph = (inputs[i].getAttribute('placeholder') || '').toLowerCase();
+              if (ph.indexOf('请输入验证码') >= 0 || ph.indexOf('验证码') >= 0 || ph.indexOf('captcha') >= 0 || ph.indexOf('verify') >= 0) {
+                inp = inputs[i];
+                break;
+              }
+            }
+          }
+          return inp;
+        }
+
+        function fillCaptchaNow() {
+          var code = window.__mwCaptchaCode;
+          if (!code) return false;
+          var inp = findCaptchaInput();
+          if (!inp) return false;
+          try {
+            var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            setter.call(inp, code);
+            inp.dispatchEvent(new Event('input', { bubbles: true }));
+            inp.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          } catch(e) { return false; }
+        }
+
+        function installNotificationConfirmHandler() {
+          if (window.__mwNotifConfirmInstalled) return;
+          window.__mwNotifConfirmInstalled = true;
+          document.addEventListener('click', function(e) {
+            var target = e.target;
+            if (!target) return;
+            var btn = target.closest ? target.closest('button, .btn, .ant-btn, .el-button, [role="button"]') : null;
+            if (!btn) return;
+            var text = (btn.textContent || btn.innerText || '').trim();
+            if (/^确认$|^确定$|^知道了$|^关闭$|^好的$/i.test(text)) {
+              setTimeout(function() {
+                if (fillCaptchaNow()) {
+                  // 验证码已填充
+                } else {
+                  var tries = 0;
+                  var timer = setInterval(function() {
+                    tries++;
+                    if (fillCaptchaNow() || tries >= 10) clearInterval(timer);
+                  }, 500);
+                }
+              }, 300);
+            }
+          }, true);
+        }
+
+        function setCaptchaCode(code, rawText, source) {
+          if (!code) return;
+          window.__mwCaptchaCode = code;
+          console.log('★★★ [mw-captcha] ★★★ 验证码结果值 = "' + code + '" (来源: ' + (source || 'unknown') + ') ★★★');
+          installNotificationConfirmHandler();
+        }
+
+        // ===== 拦截 XHR: 同时替换 prototype 和构造函数（双保险） =====
+        var OrigXHR = window.XMLHttpRequest;
+        var origOpen = OrigXHR.prototype.open;
+        var origSend = OrigXHR.prototype.send;
+        var urlMap = new WeakMap();
+
+        // 1) 替换 prototype.open/send
+        OrigXHR.prototype.open = function(method, url) {
+          try {
+            urlMap.set(this, url);
+          } catch(_) {}
+          return origOpen.apply(this, arguments);
+        };
+
+        OrigXHR.prototype.send = function() {
+          var url = urlMap.get(this) || '';
+          if (typeof url === 'string' && url.indexOf('/api/code') >= 0) {
+            var xhr = this;
+            xhr.addEventListener('load', function() {
+              try {
+                var text = xhr.responseText;
+                if (text) {
+                  var data = JSON.parse(text);
+                  if (data && data.result) {
+                    setCaptchaCode(String(data.result).trim(), text, 'XHR');
+                  }
+                }
+              } catch(e) {}
+            });
+          }
+          return origSend.apply(this, arguments);
+        };
+
+        // 2) 替换 window.XMLHttpRequest 构造函数（防止页面绕过 prototype）
+        var WrappedXHR = function() {
+          var xhr = new OrigXHR();
+          var wOpen = xhr.open;
+          var wSend = xhr.send;
+          var wUrl = '';
+          xhr.open = function(method, url) {
+            wUrl = url;
+            return wOpen.apply(xhr, arguments);
+          };
+          xhr.send = function() {
+            try {
+              if (typeof wUrl === 'string' && wUrl.indexOf('/api/code') >= 0) {
+                xhr.addEventListener('load', function() {
+                  try {
+                    var text = xhr.responseText;
+                    if (text) {
+                      var data = JSON.parse(text);
+                      if (data && data.result) {
+                        setCaptchaCode(String(data.result).trim(), text, 'XHR-ctor');
+                      }
+                    }
+                  } catch(e) {}
+                });
+              }
+            } catch(_) {}
+            return wSend.apply(xhr, arguments);
+          };
+          return xhr;
+        };
+        WrappedXHR.prototype = OrigXHR.prototype;
+        WrappedXHR.UNSENT = 0;
+        WrappedXHR.OPENED = 1;
+        WrappedXHR.HEADERS_RECEIVED = 2;
+        WrappedXHR.LOADING = 3;
+        WrappedXHR.DONE = 4;
+        try {
+          Object.defineProperty(window, 'XMLHttpRequest', {
+            value: WrappedXHR,
+            writable: true,
+            configurable: true
+          });
+        } catch(e) {}
+
+        // ===== 拦截 fetch =====
+        var origFetch = window.fetch;
+        window.fetch = function() {
+          var url = arguments[0];
+          var urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : '');
+          var p = origFetch.apply(this, arguments);
+          if (typeof urlStr === 'string' && urlStr.indexOf('/api/code') >= 0) {
+            p.then(function(resp) {
+              var cloned = resp.clone();
+              cloned.text().then(function(text) {
+                try {
+                  var data = JSON.parse(text);
+                  if (data && data.result) {
+                    setCaptchaCode(String(data.result).trim(), text, 'fetch');
+                  }
+                } catch(e) {}
+              }).catch(function() {});
+            }).catch(function() {});
+          }
+          return p;
+        };
+      })();
+    `;
+    // 注入 <script> 到主世界。preload 执行时文档可能还未开始解析，
+    // documentElement 可能不存在，使用轮询等待其出现后立即注入。
+    function injectMainWorldScript() {
+      try {
+        var target = document.documentElement || document.head || document.body;
+        if (!target) {
+          return false;
+        }
+        var scriptEl = document.createElement('script');
+        scriptEl.textContent = mainWorldScript;
+        target.appendChild(scriptEl);
+        scriptEl.remove();
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // 立即尝试注入
+    if (!injectMainWorldScript()) {
+      // 文档还未开始解析，轮询等待 documentElement 出现
+      var pollCount = 0;
+      var pollTimer = setInterval(function() {
+        pollCount++;
+        if (injectMainWorldScript() || pollCount >= 100) {
+          clearInterval(pollTimer);
+        }
+      }, 10);
+    }
+  } catch (e) {}
+
+  // 监控所有网络请求，用于调试验证码请求来源（已禁用）
+  /*
+  try {
+    if (typeof PerformanceObserver !== 'undefined') {
+      const observer = new PerformanceObserver(function(list) {
+        var entries = list.getEntries();
+        for (var i = 0; i < entries.length; i++) {
+          var name = entries[i].name;
+          if (typeof name === 'string' && name.indexOf('api/code') >= 0) {
+            console.log('[captcha] PerformanceObserver detected api/code request:', name, 'initiatorType:', entries[i].initiatorType);
+          }
+        }
+      });
+      observer.observe({ entryTypes: ['resource'] });
+    }
+  } catch (_) {}
+  */
+
+  // 定期扫描已完成的网络请求（已禁用）
+  /*
+  setInterval(function() {
+    try {
+      var entries = performance.getEntriesByType('resource');
+      for (var i = entries.length - 1; i >= 0 && i > entries.length - 20; i--) {
+        var name = entries[i].name;
+        if (typeof name === 'string' && name.indexOf('api/code') >= 0) {
+          console.log('[captcha] Performance resource api/code:', name, 'initiatorType:', entries[i].initiatorType);
+        }
+      }
+    } catch (_) {}
+  }, 2000);
+  */
+
   // Tab 名缓存：避免每次都遍历 DOM
   let _cachedTabTitle = '';
   let _cachedTabTitleTime = 0;
@@ -19,7 +254,8 @@
 
 
   function isCaptchaUrl(url) {
-    return typeof url === 'string' && /(?:^|\/)api\/code(?:[?#]|$)/i.test(url);
+    var matched = typeof url === 'string' && /(?:^|\/)api\/code(?:[?#]|$)/i.test(url);
+    return matched;
   }
 
   function extractCaptchaFromResponse(data) {
@@ -27,8 +263,52 @@
       if (data && typeof data === 'object' && data.result) {
         return String(data.result).trim();
       }
-    } catch (_) {}
+    } catch (e) {}
     return '';
+  }
+
+  // 自动填充验证码到输入框
+  function autoFillCaptcha(code) {
+    if (!code) return;
+    try {
+      // 优先查找 placeholder 包含"验证码"的输入框
+      var captchaInput = document.querySelector('input[placeholder*="验证码"]');
+      if (!captchaInput) {
+        // 回退：查找所有 input，通过 placeholder 或附近文本匹配
+        var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+        for (var i = 0; i < inputs.length; i++) {
+          var inp = inputs[i];
+          var ph = (inp.getAttribute('placeholder') || '').toLowerCase();
+          if (ph.indexOf('captcha') >= 0 || ph.indexOf('验证码') >= 0 || ph.indexOf('verify') >= 0) {
+            captchaInput = inp;
+            break;
+          }
+        }
+      }
+      if (captchaInput) {
+        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        nativeInputValueSetter.call(captchaInput, code);
+        captchaInput.dispatchEvent(new Event('input', { bubbles: true }));
+        captchaInput.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    } catch (e) {}
+  }
+
+  // 统一设置验证码并触发自动填充
+  function setCaptchaCode(code) {
+    if (!code) return;
+    window.__captchaCode = code;
+    // 立即尝试填充
+    autoFillCaptcha(code);
+    // 输入框可能尚未渲染，延迟重试几次
+    var retries = 0;
+    var retryTimer = setInterval(function() {
+      retries++;
+      autoFillCaptcha(code);
+      if (retries >= 5) {
+        clearInterval(retryTimer);
+      }
+    }, 500);
   }
 
   window.__capturedJsonResponses = window.__capturedJsonResponses || [];
@@ -145,10 +425,39 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     return 0;
   }
 
+  function invalidateTabTitleCache() {
+    _cachedTabTitle = '';
+    _cachedTabTitleTime = 0;
+  }
+
+  // 轻量级验证：检查当前激活 Tab 的标题是否与缓存一致
+  // 不一致说明用户已切换 Tab，应清除缓存重新查询
+  function verifyCacheIfPossible() {
+    if (!_cachedTabTitle) return;
+    try {
+      var activeEl = document.querySelector('.k-tab.k-active, .k-tabs-item.k-active');
+      if (activeEl) {
+        var span = activeEl.querySelector('span[title]');
+        var currentTitle = '';
+        if (span) currentTitle = (span.getAttribute('title') || '').trim();
+        if (!currentTitle) {
+          currentTitle = (activeEl.textContent || '').trim().replace(/ksicon-\S+/g, '').replace(/\s+/g, ' ').trim();
+        }
+        if (currentTitle && currentTitle.length > 0 && currentTitle !== _cachedTabTitle) {
+          invalidateTabTitleCache();
+        }
+      }
+    } catch (_) {}
+  }
+
   function getActiveTabTitle() {
     var now = Date.now();
     if (_cachedTabTitle && _cachedTabTitleTime > 0 && (now - _cachedTabTitleTime) < TAB_TITLE_CACHE_TTL) {
-      return _cachedTabTitle;
+      // 缓存命中前先验证是否与当前 DOM 一致
+      verifyCacheIfPossible();
+      if (_cachedTabTitle && (now - _cachedTabTitleTime) < TAB_TITLE_CACHE_TTL) {
+        return _cachedTabTitle;
+      }
     }
     try {
       var result = '';
@@ -506,9 +815,11 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       requestUrl = url;
       requestStartTime = Date.now();
       xhrPreSavedAsFile = false;
+      if (typeof url === 'string' && url.indexOf('api/code') >= 0) {
+        // console.log('[captcha] XHR open matched api/code, url:', url);
+      }
       return originalOpen.apply(xhr, [method, url, ...rest]);
     };
-
     // 预检：在 headers received 阶段检查 Content-Length，提前判断是否为大数据
     xhr.addEventListener('readystatechange', function() {
       try {
@@ -567,10 +878,14 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
 
         if (isCaptchaUrl(requestUrl)) {
           try {
+            // console.log('[captcha] XHR load handler, requestUrl:', requestUrl);
             const captchaData = data || JSON.parse(xhr.responseText);
+            // console.log('[captcha] XHR response data:', JSON.stringify(captchaData).substring(0, 200));
             const code = extractCaptchaFromResponse(captchaData);
-            if (code) window.__captchaCode = code;
-          } catch (_) {}
+            if (code) setCaptchaCode(code);
+          } catch (e) {
+            // console.log('[captcha] XHR captcha parse error:', e.message);
+          }
         }
 
         if (shouldCaptureUrl(requestUrl)) {
@@ -668,6 +983,61 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   Object.setPrototypeOf(window.XMLHttpRequest, OriginalXHR);
   window.XMLHttpRequest.prototype = OriginalXHR.prototype;
 
+  // ===== prototype 层面拦截：确保页面即使绕过构造函数也能捕获验证码 =====
+  const _xhrProtoOpen = OriginalXHR.prototype.open;
+  const _xhrProtoSend = OriginalXHR.prototype.send;
+  const _xhrUrlMap = new WeakMap();
+
+  // 使用 Object.defineProperty 确保即使页面缓存了引用也能拦截
+  try {
+    Object.defineProperty(OriginalXHR.prototype, 'open', {
+      value: function(method, url, ...rest) {
+        try {
+          _xhrUrlMap.set(this, { url: url, method: method, startTime: Date.now() });
+        } catch (_) {}
+        return _xhrProtoOpen.apply(this, [method, url, ...rest]);
+      },
+      writable: true,
+      configurable: true
+    });
+
+    Object.defineProperty(OriginalXHR.prototype, 'send', {
+      value: function(...args) {
+        try {
+          const info = _xhrUrlMap.get(this);
+          const url = info ? info.url : '';
+          if (typeof url === 'string' && url.indexOf('api/code') >= 0) {
+            const xhr = this;
+            xhr.addEventListener('load', function() {
+              try {
+                var respText = xhr.responseText;
+                if (respText) {
+                  var data = JSON.parse(respText);
+                  var code = extractCaptchaFromResponse(data);
+                  if (code) setCaptchaCode(code);
+                }
+              } catch (e) {}
+            });
+          }
+        } catch (_) {}
+        return _xhrProtoSend.apply(this, args);
+      },
+      writable: true,
+      configurable: true
+    });
+  } catch (e) {}
+
+  // 检查是否有 iframe（已禁用）
+  /*
+  try {
+    var iframes = document.querySelectorAll('iframe');
+    console.log('[captcha] Number of iframes on page:', iframes.length);
+    for (var fi = 0; fi < iframes.length; fi++) {
+      console.log('[captcha] iframe[' + fi + '] src:', iframes[fi].src);
+    }
+  } catch (_) {}
+  */
+
   let currentFetchUrl = '';
   const fetchRequestInfo = new WeakMap();
   const originalFetch = window.fetch;
@@ -676,6 +1046,9 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
     const urlStr = typeof url === 'string' ? url : (url && url.url ? url.url : 'fetch');
     currentFetchUrl = urlStr;
     const requestStartTime = Date.now();
+    if (typeof urlStr === 'string' && urlStr.indexOf('api/code') >= 0) {
+      // console.log('[captcha] fetch called with api/code, url:', urlStr);
+    }
     const response = await originalFetch.apply(this, args);
 
     fetchRequestInfo.set(response, { tabTitle: '', startTime: requestStartTime, url: urlStr });
@@ -685,12 +1058,15 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
         const cloned = response.clone();
         cloned.text().then(function(text) {
           try {
+            // console.log('[captcha] fetch clone text:', text.substring(0, 200));
             const data = JSON.parse(text);
             const code = extractCaptchaFromResponse(data);
-            if (code) window.__captchaCode = code;
-          } catch(_) {}
-        }).catch(function(){});
-      } catch(_) {}
+            if (code) setCaptchaCode(code);
+          } catch(e) {
+            // console.log('[captcha] fetch captcha parse error:', e.message);
+          }
+        }).catch(function(e){ /* console.log('[captcha] fetch clone text error:', e.message); */ });
+      } catch(e) { /* console.log('[captcha] fetch captcha clone error:', e.message); */ }
     }
 
     try {
@@ -748,11 +1124,13 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
 
         if (isCaptchaUrl(url)) {
           try {
+            // console.log('[captcha] fetch json path, text:', text.substring(0, 200));
             const data = JSON.parse(text);
             const code = extractCaptchaFromResponse(data);
-            if (code) window.__captchaCode = code;
+            if (code) setCaptchaCode(code);
             return data;
-          } catch (_) {
+          } catch (e) {
+            // console.log('[captcha] fetch json path error:', e.message);
             return {};
           }
         }
@@ -917,6 +1295,8 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       const btn = e.target && e.target.closest && e.target.closest('button, input[type="submit"], input[type="button"], [role="button"], .btn, .ant-btn, .el-button, .k-btn, .ksfont');
       if (!btn) return;
       if (isQueryButton(btn)) {
+        // 点击运行按钮时强制刷新 Tab 标题缓存，确保使用当前激活 Tab 的标题
+        invalidateTabTitleCache();
         const activeTab = getActiveTabTitle();
         const btnText = (btn.textContent || btn.innerText || '').trim();
         try {
@@ -966,6 +1346,21 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
   }
 
   document.addEventListener('click', clearOnQueryClick, true);
+
+  // Tab 切换监听：点击非激活 Tab 时清除标题缓存，避免新 Tab 请求使用旧 Tab 标题
+  function handleTabSwitchClick(e) {
+    try {
+      if (!e.target || !e.target.closest) return;
+      var tabEl = e.target.closest('.k-tab, .k-tabs-item, .flow-tabs-item, .ant-tabs-tab, .el-tabs__item, .ivu-tabs-tab, [role="tab"]');
+      if (!tabEl) return;
+      var isActive = tabEl.classList.contains('k-active') || tabEl.classList.contains('active') || tabEl.getAttribute('aria-selected') === 'true';
+      if (!isActive) {
+        // 点击的是非激活 Tab，用户即将切换，清除缓存
+        invalidateTabTitleCache();
+      }
+    } catch (_) {}
+  }
+  document.addEventListener('click', handleTabSwitchClick, true);
 
   function handleTabCloseClick(e) {
     try {
@@ -1182,6 +1577,49 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
       return '';
     }
 
+    function autoFillCaptchaLocal(doc, code) {
+      if (!doc || !code) return;
+      try {
+        var inp = doc.querySelector('input[placeholder*="验证码"]');
+        if (!inp) {
+          var inputs = doc.querySelectorAll('input[type="text"], input:not([type])');
+          for (var i = 0; i < inputs.length; i++) {
+            var ph = (inputs[i].getAttribute('placeholder') || '').toLowerCase();
+            if (ph.indexOf('验证码') >= 0 || ph.indexOf('captcha') >= 0 || ph.indexOf('verify') >= 0) {
+              inp = inputs[i];
+              break;
+            }
+          }
+        }
+        if (inp) {
+          var setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value').set;
+          setter.call(inp, code);
+          inp.dispatchEvent(new win.Event('input', { bubbles: true }));
+          inp.dispatchEvent(new win.Event('change', { bubbles: true }));
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    }
+
+    function setCaptchaCodeLocal(code) {
+      if (!code) return;
+      win.__captchaCode = code;
+      // 在当前 iframe 和顶层窗口中尝试填充
+      autoFillCaptchaLocal(win.document, code);
+      try {
+        if (win.top && win.top !== win) autoFillCaptchaLocal(win.top.document, code);
+      } catch (_) {}
+      // 延迟重试
+      var tries = 0;
+      var timer = setInterval(function() {
+        tries++;
+        autoFillCaptchaLocal(win.document, code);
+        try { if (win.top && win.top !== win) autoFillCaptchaLocal(win.top.document, code); } catch (_) {}
+        if (tries >= 5) clearInterval(timer);
+      }, 500);
+    }
+
     try {
       const OriginalXHR = win.XMLHttpRequest;
       if (OriginalXHR && !win.__captchaXHRInterceptInstalled) {
@@ -1199,7 +1637,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
               if (isCaptchaUrlLocal(requestUrl)) {
                 const data = JSON.parse(xhr.responseText);
                 const code = extractCaptchaFromResponseLocal(data);
-                if (code) win.__captchaCode = code;
+                if (code) setCaptchaCodeLocal(code);
               }
             } catch (_) {}
           });
@@ -1227,7 +1665,7 @@ window.__clearCapturedJsonByTab = function(tabTitle) {
                 try {
                   const data = JSON.parse(text);
                   const code = extractCaptchaFromResponseLocal(data);
-                  if (code) win.__captchaCode = code;
+                  if (code) setCaptchaCodeLocal(code);
                 } catch(_) {}
               }).catch(function(){});
             } catch(_) {}

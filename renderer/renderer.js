@@ -395,12 +395,15 @@ webview.addEventListener('did-finish-load', () => {
   injectJsonCapture();
   // 也注入凭证捕获脚本
   injectCredentialCapture();
+  // 注入验证码拦截器（页面上下文）
+  injectCaptchaInterceptor();
   // 尝试扫描当前页面（自动检测）
   quickScanPage();
 });
 webview.addEventListener('dom-ready', () => {
   injectJsonCapture();
   injectCredentialCapture();
+  injectCaptchaInterceptor();
 });
 webview.addEventListener('did-start-loading', () => {
   setStatus(tr('statusLoading'));
@@ -535,13 +538,15 @@ async function tryAutoFill(retry) {
           // 检查是否已有值，已有值则不覆盖
           if (target.value && target.value.trim()) return;
 
-          // 辅助函数：从主 frame 或 iframe 读取验证码
+          // 辅助函数：从主 frame 或 iframe 读取验证码（优先读取主世界变量）
           function getCaptchaCode() {
+            if (window.__mwCaptchaCode) return window.__mwCaptchaCode;
             if (window.__captchaCode) return window.__captchaCode;
             const iframes = document.querySelectorAll('iframe');
             for (let i = 0; i < iframes.length; i++) {
               try {
                 const win = iframes[i].contentWindow;
+                if (win && win.__mwCaptchaCode) return win.__mwCaptchaCode;
                 if (win && win.__captchaCode) return win.__captchaCode;
               } catch(e) {}
             }
@@ -549,12 +554,16 @@ async function tryAutoFill(retry) {
           }
 
           function clearCaptchaCode() {
-            window.__captchaCode = '';
+            try { window.__mwCaptchaCode = ''; } catch(_) {}
+            try { window.__captchaCode = ''; } catch(_) {}
             const iframes = document.querySelectorAll('iframe');
             for (let i = 0; i < iframes.length; i++) {
               try {
                 const win = iframes[i].contentWindow;
-                if (win) win.__captchaCode = '';
+                if (win) {
+                  try { win.__mwCaptchaCode = ''; } catch(_) {}
+                  try { win.__captchaCode = ''; } catch(_) {}
+                }
               } catch(e) {}
             }
           }
@@ -648,7 +657,7 @@ async function injectCredentialCapture() {
           try {
             sessionStorage.setItem('__capturedCred_backup', JSON.stringify(window.__capturedCred));
           } catch(e) {}
-          console.log('[credCapture] captured:', username);
+          console.log('[用户名] :', username);
         }
       }
       document.addEventListener('submit', handleSubmit, true);
@@ -687,6 +696,18 @@ async function injectCredentialCapture() {
     })()
   `;
   try { await webview.executeJavaScript(code); } catch (e) { console.log('[injectCredentialCapture] error:', e); }
+}
+
+// 检查 preload 通过 <script> 标签注入的主世界拦截器是否生效（调试日志已禁用）
+async function injectCaptchaInterceptor() {
+  const code = `
+    (function() {
+      return !!window.__mwCaptchaInstalled;
+    })()
+  `;
+  try {
+    await webview.executeJavaScript(code);
+  } catch (e) {}
 }
 
 async function checkCapturedCredentials() {
