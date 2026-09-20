@@ -1,0 +1,64 @@
+version: 2.1
+
+jobs:
+  build-macos-arm64:
+    macos:
+      xcode: "16.0"
+    resource_class: m4pro.medium   # Apple Silicon (arm64) 资源类
+    steps:
+      - checkout
+
+      # 1. 查看环境，确认是 arm64 而不是 Rosetta
+      - run:
+          name: Verify macOS ARM64 environment
+          command: |
+            sw_vers
+            uname -m
+            python3 --version
+            python3 -c "import platform; print('machine:', platform.machine())"
+
+      # 2. 安装项目依赖 + PyInstaller
+      - run:
+          name: Install dependencies
+          command: |
+            python3 -m pip install --upgrade pip
+            python3 -m pip install pyinstaller
+            # 如果你的项目有 requirements.txt，取消下面注释
+            # python3 -m pip install -r requirements.txt
+
+      # 3. 执行你的打包脚本
+      - run:
+          name: Build .app with build_exe.py
+          command: |
+            python3 build_exe.py
+
+      # 4. 校验产物架构（确保是 arm64 原生）
+      - run:
+          name: Verify app architecture
+          command: |
+            APP="dist/疾控中心下发报告生成工具.app"
+            BIN="$APP/Contents/MacOS/疾控中心下发报告生成工具"
+            if [ -f "$BIN" ]; then
+              lipo -info "$BIN"
+              file "$BIN"
+            else
+              echo "未找到可执行文件，列出 Contents/MacOS："
+              ls -la "$APP/Contents/MacOS/" || true
+            fi
+
+      # 5. 把 dist 打成 zip（保留 .app 的符号链接和权限，方便本地直接解压运行）
+      - run:
+          name: Package dist into zip
+          command: |
+            cd dist
+            zip -r -y ../app-macos-arm64.zip .
+
+      # 6. 上传到 Artifacts，供你下载
+      - store_artifacts:
+          path: app-macos-arm64.zip
+          destination: app-macos-arm64.zip
+
+workflows:
+  build:
+    jobs:
+      - build-macos-arm64
